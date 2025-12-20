@@ -1,7 +1,7 @@
 # bbh-server
 Server for Boxhead Bounty Hunter
 
-NOTES: This server is currently local only and runs on Python. To run the server locally, you need to:
+NOTES: This server is currently local only (meaning it's essentially singleplayer lol) and runs on Python. To run the server locally, you need to:
 
 1. Clone/Download the files
 2. Move the "assets.swf" and "Constants.xml" files to a folder called "_assets" that is in the same directory that you downloaded the rest of the data (e.g. server.py)
