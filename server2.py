@@ -113,6 +113,9 @@ def lobby_user_packet(account_id: str) -> bytes:
     updateUserFromLobbyHandshake(param2):
       name20 + stats6 + wanted
     """
+    if USERS[account_id].get("room") != "_":
+        return b""
+
     username = USERS[account_id]["username"]
     name20 = fmt_name_20(username)
 
@@ -123,37 +126,42 @@ def lobby_user_packet(account_id: str) -> bytes:
     return f"U{wire_id(account_id)}{payload}\x00".encode("utf-8")
 
 def game_user_packet(account_id: str) -> bytes:
-    """
-    updateUserFromGameHandshake(param2):
-      team2 score3 name20 gender1 headM2 headC2 bodyM2 bodyC2 level1
-      kills;deaths;assists;cash;
-      (weapon triples...)
-      wanted1
-    """
-    username = USERS[account_id]["username"]
-    name20 = fmt_name_20(username)
+    u = USERS[account_id]
+    name20 = fmt_name_20(u["username"])
 
-    team = "00"
-    score = "000"
+    # FIXED-WIDTH HEADER (35 chars total before semicolons)
 
-    gender = "0"
-    head_model = "00"
-    head_color = "00"
-    body_model = "00"
-    body_color = "00"
-    level = "0"
+    weapon_id = "00"     # 2 digits
+    hp        = "100"    # 3 digits (player health)
+    gender    = "0"      # 0 = monster
+    head_m    = "00"
+    head_c    = "00"
+    body_m    = "00"
+    body_c    = "00"
+    team      = "0"      # single digit
 
-    # cash is what leaderboard uses. leave at 10000 for now
-    kda_cash = "0;0;0;10000;"
-    wanted = "0"
+    # SEMICOLON-DELIMITED SECTION (NO width limits)
+
+    score  = "10000"     # money
+    kills  = "0"
+    deaths = "0"
+    bounty = "0"
+
+    weapons = ""         # empty upgrade list allowed
+    wanted  = "0"
 
     payload = (
-        f"{team}{score}{name20}"
-        f"{gender}{head_model}{head_color}{body_model}{body_color}{level}"
-        f"{kda_cash}"
+        f"{weapon_id}{hp}{name20}"
+        f"{gender}{head_m}{head_c}{body_m}{body_c}{team}"
+        f"{score};{kills};{deaths};{bounty};"
+        f"{weapons}"
         f"{wanted}"
     )
+
     return f"U{wire_id(account_id)}{payload}\x00".encode("utf-8")
+
+
+
 
 ###############################################################################
 # Room list / broadcast
@@ -250,31 +258,31 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             except OSError:
                 pass
 
-    def relay_state_to_room(self, room_name: str, packet: str, include_self: bool = False):
-        """
-        Relay *state/gameplay* packets that the client sends without an ID.
-
-        Client expects: <opcode><senderID><payload>
-        Example:
-          incoming from client: 10565004750000
-          outgoing to peers:    1 + 001 + 0565004750000
-        """
+    def relay_state_to_room(self, room_name: str, packet: str):
         if not room_name or room_name not in self.server.rooms:
             return
-        if not packet:
+
+        # ONLY rewrite packets with 2-byte opcodes
+        if len(packet) < 3:
             return
 
-        opcode = packet[0]
-        payload = packet[1:]
+        opcode = packet[:2]
+
+        # Allowed opcodes to rewrite
+        if opcode not in ("10", "11", "12", "80"):
+            return
+
+        payload = packet[2:]
         out = f"{opcode}{wire_id(self.account_id)}{payload}\x00".encode("utf-8")
 
         for peer_acc in self.server.rooms[room_name]["players"]:
-            if not include_self and peer_acc == self.account_id:
+            if peer_acc == self.account_id:
                 continue
             try:
                 USERS[peer_acc]["socket"].sendall(out)
             except OSError:
                 pass
+
 
     def relay_chat9_to_room(self, room_name: str, packet: str, include_self: bool = False):
         """
@@ -420,7 +428,22 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
         # JOIN ROOM
         if packet.startswith("03"):
             room_name = normalize_room_name(packet[2:])
+
+            old_room = USERS[self.account_id].get("room")
+            if old_room:
+                # notify peers in old room BEFORE switching
+                for peer_acc in list(self.server.rooms.get(old_room, {}).get("players", [])):
+                    if peer_acc != self.account_id:
+                        try:
+                            USERS[peer_acc]["socket"].sendall(
+                                f"D{wire_id(self.account_id)}\x00".encode("utf-8")
+                            )
+                        except OSError:
+                            pass
+
+            # now actually leave
             self.leave_current_room(self.account_id)
+
             print(f"[=] User {wire_id(self.account_id)} joining room: {room_name}")
 
             if room_name not in self.server.rooms:
@@ -434,6 +457,9 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             # tell self it joined
             self.send(f"C{wire_id(self.account_id)}\x00".encode("utf-8"))
 
+            # IMPORTANT: send self game handshake
+            self.send(game_user_packet(self.account_id))
+
             # sync peers
             for peer_acc in list(room["players"]):
                 if peer_acc == self.account_id:
@@ -441,15 +467,18 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
 
                 # tell self about peer
                 self.send(f"C{wire_id(peer_acc)}\x00".encode("utf-8"))
-                self.send(lobby_user_packet(peer_acc) if room_name == "_" else game_user_packet(peer_acc))
+                if room_name == "_" and USERS[peer_acc].get("room") == "_":
+                    self.send(lobby_user_packet(peer_acc))
 
                 # tell peer about self
                 try:
                     peer_sock = USERS[peer_acc]["socket"]
-                    peer_sock.sendall(f"C{wire_id(self.account_id)}\x00".encode("utf-8"))
-                    peer_sock.sendall(lobby_user_packet(self.account_id) if room_name == "_" else game_user_packet(self.account_id))
+                    if room_name == "_":
+                        peer_sock.sendall(f"C{wire_id(self.account_id)}\x00".encode("utf-8"))
+                        peer_sock.sendall(lobby_user_packet(self.account_id))
                 except OSError:
                     pass
+
 
             # after lobby join, send room list
             if room_name == "_":
@@ -476,6 +505,24 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             self.send(f"R{wire_id(self.account_id)}\x00".encode("utf-8"))
             self.send(f"G{wire_id(self.account_id)}\x00".encode("utf-8"))
             self.send(f"I{wire_id(self.account_id)}\x00".encode("utf-8"))
+
+
+            # AFTER all C packets
+            for peer_acc in room["players"]:
+                if peer_acc == self.account_id:
+                    continue
+
+                # send peer handshake to self
+                self.send(game_user_packet(peer_acc))
+
+                # send self handshake to peer
+                # send self to existing peer (CREATE + HANDSHAKE)
+                peer_sock = USERS[peer_acc]["socket"]
+                peer_sock.sendall(f"C{wire_id(self.account_id)}\x00".encode("utf-8"))
+                peer_sock.sendall(game_user_packet(self.account_id))
+
+
+
             print("[<] Game join completed.")
             return
 
@@ -568,24 +615,30 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 self.relay_state_to_room(room_name, packet)
             return
 
-        # --- weapon switch / misc state ---
-        if packet.startswith("0q"):
+        # # --- weapon switch / misc state ---
+        # if packet.startswith("0q"):
+        #     if room_name:
+        #         self.relay_state_to_room(room_name, packet)
+        #     return
+
+        # # --- projectile / fire packets ---
+        # if packet.startswith("4"):
+        #     if room_name:
+        #         self.relay_state_to_room(room_name, packet)
+        #     return
+
+        # # --- 0k... (this happens in-game; treat as state and forward) ---
+        # # You were seeing it as unhandled. It MUST propagate.
+        # if packet.startswith("0k"):
+        #     if room_name:
+        #         self.relay_state_to_room(room_name, packet)
+        #     return
+
+        if packet.startswith(("4", "0k", "0q")):
             if room_name:
-                self.relay_state_to_room(room_name, packet)
+                self.relay_raw_to_room(room_name, packet)
             return
 
-        # --- projectile / fire packets ---
-        if packet.startswith("4"):
-            if room_name:
-                self.relay_state_to_room(room_name, packet)
-            return
-
-        # --- 0k... (this happens in-game; treat as state and forward) ---
-        # You were seeing it as unhandled. It MUST propagate.
-        if packet.startswith("0k"):
-            if room_name:
-                self.relay_state_to_room(room_name, packet)
-            return
 
         # --- customization ---
         if packet.startswith("0d"):
