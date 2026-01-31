@@ -126,38 +126,76 @@ def lobby_user_packet(account_id: str) -> bytes:
     payload = f"{name20}{stats6}{wanted}"
     return f"U{wire_id(account_id)}{payload}\x00".encode("utf-8")
 
+# def game_user_packet(account_id: str) -> bytes:
+#     u = USERS[account_id]
+    
+#     # --- 1. NAME (20 Chars) ---
+#     # AS3 Logic: var _loc3_:String = param2.substr(5,20);
+#     # AS3 Logic: while(_loc3_.charAt(0) == "#") { ... } (Strips leading #)
+#     raw_name = (u["username"] or "Player").replace("#", "")
+#     clean_name = "".join(c for c in raw_name if 32 <= ord(c) <= 126)
+#     # We MUST provide exactly 20 chars so the next field starts at index 25.
+#     name_20 = ("#" + clean_name).rjust(20, "#")[-20:]
+
+#     # --- 2. HEADER (35 Chars) ---
+#     # Index 0-2 (2 chars): Current Weapon ID. "00" = Pistol.
+#     # Index 2-5 (3 chars): HP. "100".
+#     # Index 5-25 (20 chars): Name (Defined above).
+#     # Index 25 (1 char): Gender. 0=Monster, 1=Male, 2=Female.
+#     # Index 26-28 (2 chars): Head Model Index. "01" is standard.
+#     # Index 28-30 (2 chars): Head Color Index. "01" is standard.
+#     # Index 30-32 (2 chars): Body Model Index. "01" is standard.
+#     # Index 32-34 (2 chars): Body Color Index. "01" is standard.
+#     # Index 34 (1 char): Team. "1" (Red). 0 often crashes if no "Neutral" skin exists.
+    
+#     # Total Length Check: 2+3+20+1+2+2+2+2+1 = 35 Characters.
+#     header = "00100" + name_20 + "1010101011"
+
+#     # --- 3. STATS (4 Semicolons) ---
+#     # AS3 Logic: Finds ";" 4 times to read Score, Kills, Deaths, Bounty.
+#     # If we miss a semicolon, it reads the Weapon List as the Bounty -> CRASH.
+#     stats = "0;0;0;0;"
+
+#     # --- 4. WEAPONS (3 Chars Each) ---
+#     # AS3 Logic: while(param2.length > 2) { read 2 chars ID, read 1 char Flag }
+#     # "00" (ID: Pistol) + "1" (Flag: Enabled) = "001"
+#     # Sending Flag "0" (Disabled) usually causes the Railgun Crash because 
+#     # the client sees you have a Pistol but are not allowed to use it.
+#     weapons = "001"
+
+#     # --- 5. WANTED STATUS (1 Char) ---
+#     # AS3 Logic: param1.wanted = param2.charAt(param2.length - 1) == "1";
+#     # This is appended to the very end.
+#     wanted = "0"
+
+#     # --- ASSEMBLE ---
+#     # Payload = Header + Stats + Weapons + Wanted
+#     payload = "U" + wire_id(account_id) + header + stats + weapons + wanted + "\x00"
+    
+#     return payload.encode("utf-8")
+
 def game_user_packet(account_id: str) -> bytes:
     u = USERS[account_id]
     
-    # 1. NAME (20 chars)
-    # Filter to ASCII, remove #, pad to 20
+    # 1. NAME PROCESSING
     raw = (u["username"] or "Player").replace("#", "")
     clean = "".join(c for c in raw if 32 <= ord(c) <= 126)
     name_20 = ("#" + clean).rjust(20, "#")[-20:]
 
-    # 2. HEADER (Strictly 35 chars)
-    # We construct it, then slice it to be 100% sure.
-    # 00(Wpn) + 100(HP) + Name + 1(Gen) + 01(Head) + 01(Color) + 01(Body) + 01(Color) + 0(Team)
-    header_raw = "00100" + name_20 + "1010101010"
+    # 2. HEADER CONSTRUCTION
+    # Wpn(00) + HP(100) + Name(20) + Gen(1) + Head(00) + Col(00) + Body(00) + Col(00) + Team(1)
+    # The last digit '1' is the "Active Player" flag. '0' makes you invisible.
+    header_raw = "00100" + name_20 + "1000000001"
+    
+    # Ensure exactly 35 chars
     header_35 = header_raw[:35].ljust(35, "0")
 
-    # 3. STATS & WEAPONS (The Crash Fix)
-    # We manually type the string to guarantee 4 semicolons.
-    # Stats: Score=0; Kills=0; Deaths=0; Bounty=0;
-    # Weapons: 000 (Pistol)
-    # Wanted: 0
-    
-    # This string explicitly includes the missing semicolon
-    variable_data = "0;0;0;0;0000"
+    # 3. WEAPON STATE
+    # "001" = Pistol (ID 00) + Flag 1 (Equipped). 
+    # Must use Flag 1 or the game crashes looking for a backup weapon.
+    variable_data = "0;0;0;0;0010"
 
-    # 4. ASSEMBLE
-    # U + WireID + Header + Data + Null
     payload = "U" + wire_id(account_id) + header_35 + variable_data + "\x00"
-    
-    # Debug to verify the fix
-    print(f"[DEBUG-FINAL] Semicolon Check: {variable_data}")
-    print(f"[DEBUG-FINAL] Full Payload: {payload!r}")
-    
     return payload.encode("utf-8")
 
 
@@ -267,31 +305,33 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
         if not room_name or room_name not in self.server.rooms:
             return
         
-        # Logic: 
-        # If it's a movement packet (starts with 1), prepend opcode + ID.
-        # If it's a P2P packet (starts with M), it's already formatted.
+        sender_wire = wire_id(self.account_id)
         
-        sender_id = wire_id(self.account_id)
-        
-        # Standard Movement/State Packet (Opcode 1 or 8)
-        # Incoming: "1050..." -> Outgoing: "1001050..."
-        if packet[0] in ('1', '8'): 
-            out = f"{packet[0]}{sender_id}{packet[1:]}\x00".encode("utf-8")
+        # Format the packet with Sender ID
+        if packet.startswith("0l"):
+            out_str = f"0l{sender_wire}{packet[2:]}"
         else:
-            # Pass through other packets (like M...) unmodified if they have ID
-            # But usually, relay logic is specific to movement.
-            # If you are blindly relaying everything, use the safe format:
-            # (This is the safest fallback for unknown opcodes)
-            out = f"{packet[0]}{sender_id}{packet[1:]}\x00".encode("utf-8")
+            out_str = f"{packet[0]}{sender_wire}{packet[1:]}"
+            
+        out = out_str.encode("utf-8") + b"\x00"
 
         room = self.server.rooms[room_name]
+        sent_count = 0
+        
         for peer_acc in room["players"]:
-             if peer_acc == self.account_id:
-                 continue
-             try:
-                 USERS[peer_acc]["socket"].sendall(out)
-             except:
-                 pass
+             if peer_acc == self.account_id: continue
+             if peer_acc in USERS:
+                 try: 
+                     USERS[peer_acc]["socket"].sendall(out)
+                     sent_count += 1
+                 except: pass
+        
+        # DEBUG PRINT
+        if sent_count > 0:
+            print(f"[RELAY] Relayed {out_str!r} to {sent_count} peers")
+        else:
+            # If you see this, it means you are alone in the room or peers are diconnected
+            pass
 
 
     def relay_chat9_to_room(self, room_name: str, packet: str, include_self: bool = False):
@@ -389,11 +429,6 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             self.send(policy.encode("utf-8"))
             return
         
-        if packet.startswith(("1", "8")):
-            USERS[self.account_id]["last_state"] = packet
-
-
-
         # AUTH REQUEST
         elif packet.startswith("09"):
             creds = packet[2:]
@@ -671,8 +706,14 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
         # GAME / LOBBY TRAFFIC
         #######################################################################
 
-        # 1-char opcodes that need sender injection
-        elif packet.startswith(("1", "8", "4")):
+
+        # Catches Move(1), Rotate(8), Shoot(4), and Loadout(0l)
+        elif packet.startswith(("1", "8", "4")) or packet.startswith("0l"):
+            # 1. Save state (moved from top of function)
+            if packet.startswith(("1", "8")):
+                USERS[self.account_id]["last_state"] = packet
+            
+            # 2. Relay (now guaranteed to run)
             room_name = USERS[self.account_id].get("room")
             if room_name:
                 self.relay_state_to_room(room_name, packet)
