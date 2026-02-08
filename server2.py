@@ -126,78 +126,33 @@ def lobby_user_packet(account_id: str) -> bytes:
     payload = f"{name20}{stats6}{wanted}"
     return f"U{wire_id(account_id)}{payload}\x00".encode("utf-8")
 
-# def game_user_packet(account_id: str) -> bytes:
-#     u = USERS[account_id]
-    
-#     # --- 1. NAME (20 Chars) ---
-#     # AS3 Logic: var _loc3_:String = param2.substr(5,20);
-#     # AS3 Logic: while(_loc3_.charAt(0) == "#") { ... } (Strips leading #)
-#     raw_name = (u["username"] or "Player").replace("#", "")
-#     clean_name = "".join(c for c in raw_name if 32 <= ord(c) <= 126)
-#     # We MUST provide exactly 20 chars so the next field starts at index 25.
-#     name_20 = ("#" + clean_name).rjust(20, "#")[-20:]
-
-#     # --- 2. HEADER (35 Chars) ---
-#     # Index 0-2 (2 chars): Current Weapon ID. "00" = Pistol.
-#     # Index 2-5 (3 chars): HP. "100".
-#     # Index 5-25 (20 chars): Name (Defined above).
-#     # Index 25 (1 char): Gender. 0=Monster, 1=Male, 2=Female.
-#     # Index 26-28 (2 chars): Head Model Index. "01" is standard.
-#     # Index 28-30 (2 chars): Head Color Index. "01" is standard.
-#     # Index 30-32 (2 chars): Body Model Index. "01" is standard.
-#     # Index 32-34 (2 chars): Body Color Index. "01" is standard.
-#     # Index 34 (1 char): Team. "1" (Red). 0 often crashes if no "Neutral" skin exists.
-    
-#     # Total Length Check: 2+3+20+1+2+2+2+2+1 = 35 Characters.
-#     header = "00100" + name_20 + "1010101011"
-
-#     # --- 3. STATS (4 Semicolons) ---
-#     # AS3 Logic: Finds ";" 4 times to read Score, Kills, Deaths, Bounty.
-#     # If we miss a semicolon, it reads the Weapon List as the Bounty -> CRASH.
-#     stats = "0;0;0;0;"
-
-#     # --- 4. WEAPONS (3 Chars Each) ---
-#     # AS3 Logic: while(param2.length > 2) { read 2 chars ID, read 1 char Flag }
-#     # "00" (ID: Pistol) + "1" (Flag: Enabled) = "001"
-#     # Sending Flag "0" (Disabled) usually causes the Railgun Crash because 
-#     # the client sees you have a Pistol but are not allowed to use it.
-#     weapons = "001"
-
-#     # --- 5. WANTED STATUS (1 Char) ---
-#     # AS3 Logic: param1.wanted = param2.charAt(param2.length - 1) == "1";
-#     # This is appended to the very end.
-#     wanted = "0"
-
-#     # --- ASSEMBLE ---
-#     # Payload = Header + Stats + Weapons + Wanted
-#     payload = "U" + wire_id(account_id) + header + stats + weapons + wanted + "\x00"
-    
-#     return payload.encode("utf-8")
-
 def game_user_packet(account_id: str) -> bytes:
     u = USERS[account_id]
     
-    # 1. NAME PROCESSING
+    # 1. NAME (20 chars)
+    # Ensure we strip invalid chars and pad correctly
     raw = (u["username"] or "Player").replace("#", "")
     clean = "".join(c for c in raw if 32 <= ord(c) <= 126)
     name_20 = ("#" + clean).rjust(20, "#")[-20:]
 
-    # 2. HEADER CONSTRUCTION
-    # Wpn(00) + HP(100) + Name(20) + Gen(1) + Head(00) + Col(00) + Body(00) + Col(00) + Team(1)
-    # The last digit '1' is the "Active Player" flag. '0' makes you invisible.
-    header_raw = "00100" + name_20 + "1000000001"
+    # 2. HEADER (36 chars)
+    # Prefix: "00100" (5 chars)
+    # Name:   20 chars
+    # Suffix: "10101010120" (11 chars)
+    # breakdown: Gen(1) Head(01) HCol(01) Body(01) BCol(01) Team(2) State(0)
     
-    # Ensure exactly 35 chars
-    header_35 = header_raw[:35].ljust(35, "0")
+    # THIS IS THE CRITICAL LINE:
+    header_raw = "00100" + name_20 + "10101010120"
+    
+    # Force exactly 36 chars length
+    header_36 = header_raw[:36].ljust(36, "0")
 
-    # 3. WEAPON STATE
-    # "001" = Pistol (ID 00) + Flag 1 (Equipped). 
-    # Must use Flag 1 or the game crashes looking for a backup weapon.
-    variable_data = "0;0;0;0;0010"
+    # 3. VARIABLES
+    # Pistol Enabled (Index 0 set to 1)
+    variable_data = "0;0;0;0;1000000000000000"
 
-    payload = "U" + wire_id(account_id) + header_35 + variable_data + "\x00"
+    payload = "U" + wire_id(account_id) + header_36 + variable_data + "\x00"
     return payload.encode("utf-8")
-
 
 def spawn_packet(account_id: str, x=200, y=200, direction=0, hp=100):
     # NOTE: opcode MUST be 1 char before the 3-char sender id
@@ -509,7 +464,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
 
             # IMPORTANT: send self game handshake
             self.send(game_user_packet(self.account_id))
-            self.send(f"6{wire_id(self.account_id)}100000000000\x00".encode("utf-8"))
+            self.send(f"6{wire_id(self.account_id)}110001000000000000000\x00".encode("utf-8"))
 
 
             # sync peers
@@ -609,7 +564,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     # REMOVED: self.send(spawn_packet(peer_acc)) <--- DELETE THIS LINE
                     
                     # Only send the "Spawn Ready" signal (Opcode 6)
-                    self.send(f"6{wire_id(peer_acc)}100000000000\x00".encode("utf-8"))
+                    self.send(f"6{wire_id(peer_acc)}110001000000000000000\x00".encode("utf-8"))
 
                 # --- SPAWN JOINER FOR EXISTING PLAYERS ---
                 # REMOVED: spawn = spawn_packet(self.account_id) <--- DELETE THIS LINE
@@ -621,8 +576,37 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     
                     # Only send the "Spawn Ready" signal
                     USERS[peer_acc]["socket"].sendall(
-                        f"6{wire_id(self.account_id)}100000000000\x00".encode("utf-8")
+                        f"6{wire_id(self.account_id)}110001000000000000000\x00".encode("utf-8")
                     )
+
+        # === NEW: RELAY MOVEMENT & ACTIONS ===
+        # === MOVEMENT (1) and ACTIONS (4) ===
+        elif packet.startswith("1") or packet.startswith("4"):
+            # 1. Find the room
+            current_room_name = USERS[self.account_id].get("room")
+            
+            if current_room_name and current_room_name in self.server.rooms:
+                room = self.server.rooms[current_room_name]
+                
+                # 2. CONSTRUCT PAYLOAD (NO TRUNCATION)
+                # Client sends: Type(1) + Data(5-digit coords)
+                # Server sends: Type(1) + ID(3) + Data(5-digit coords)
+                
+                # We just insert the ID. We do NOT chop the string.
+                payload = packet[0] + self.account_id.zfill(3) + packet[1:]
+                
+                # Debug print to confirm 5-digit structure
+                # print(f"[RELAY] {self.account_id} -> {payload}")
+
+                # 3. Relay to peers
+                for peer_acc in list(room["players"]):
+                    if peer_acc == self.account_id: continue
+                    
+                    if peer_acc in USERS:
+                        try:
+                            USERS[peer_acc]["socket"].sendall(payload.encode("utf-8") + b"\x00")
+                        except:
+                            pass
 
         # ROOM LIST REQUEST
         elif packet == "01":
@@ -708,9 +692,9 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
 
 
         # Catches Move(1), Rotate(8), Shoot(4), and Loadout(0l)
-        elif packet.startswith(("1", "8", "4")) or packet.startswith("0l"):
+        elif packet.startswith(("8")) or packet.startswith("0l"):
             # 1. Save state (moved from top of function)
-            if packet.startswith(("1", "8")):
+            if packet.startswith(("8")):
                 USERS[self.account_id]["last_state"] = packet
             
             # 2. Relay (now guaranteed to run)
