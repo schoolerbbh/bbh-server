@@ -580,33 +580,109 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     )
 
         # === NEW: RELAY MOVEMENT & ACTIONS ===
-        # === MOVEMENT (1) and ACTIONS (4) ===
-        elif packet.startswith("1") or packet.startswith("4"):
-            # 1. Find the room
-            current_room_name = USERS[self.account_id].get("room")
+        # # === MOVEMENT (Types 1, 4) ===
+        # elif packet.startswith("1") or packet.startswith("4"):
+        #     # 1. Validation
+        #     if self.account_id not in USERS: return
             
-            if current_room_name and current_room_name in self.server.rooms:
-                room = self.server.rooms[current_room_name]
-                
-                # 2. CONSTRUCT PAYLOAD (NO TRUNCATION)
-                # Client sends: Type(1) + Data(5-digit coords)
-                # Server sends: Type(1) + ID(3) + Data(5-digit coords)
-                
-                # We just insert the ID. We do NOT chop the string.
-                payload = packet[0] + self.account_id.zfill(3) + packet[1:]
-                
-                # Debug print to confirm 5-digit structure
-                # print(f"[RELAY] {self.account_id} -> {payload}")
+        #     current_room_name = USERS[self.account_id].get("room")
+        #     if not current_room_name or current_room_name not in self.server.rooms:
+        #         return
 
-                # 3. Relay to peers
-                for peer_acc in list(room["players"]):
-                    if peer_acc == self.account_id: continue
+        #     room = self.server.rooms[current_room_name]
+        #     room["players"].add(self.account_id)
+
+        #     # 2. COORDINATE FIX (Preserve 5-Digit Precision)
+        #     raw = packet[1:] # Strip Type
+            
+        #     if len(raw) >= 10:
+        #         x_part = raw[0:5]   # 5 digits (e.g. 02950)
+        #         y_part = raw[5:10]  # 5 digits (e.g. 00565)
+        #         rest = raw[10:]
+                
+        #         # DEBUG PRINT: Show exactly what we parsed
+        #         if packet.startswith("1"):
+        #              print(f"[DEBUG] {self.account_id} Move: Raw={packet} -> X={x_part} Y={y_part}")
+                
+        #         # Rebuild: Type + AccountID(3) + X(5) + Y(5) + Rest
+        #         payload = packet[0] + self.account_id.zfill(3) + x_part + y_part + rest
+        #     else:
+        #         payload = packet[0] + self.account_id.zfill(3) + raw
+
+        #     # 3. Broadcast
+        #     for peer_acc in list(room["players"]):
+        #         if peer_acc == self.account_id: continue
+        #         if peer_acc in USERS:
+        #             try: USERS[peer_acc]["socket"].sendall(payload.encode("utf-8") + b"\x00"), print('[<] Sent Movement Payload: ', payload.encode("utf-8"))
+        #             except: pass
+
+        # === MOVEMENT (Types 1, 4) ===
+        # === MOVEMENT (Types 1, 4) ===
+        elif packet.startswith("1") or packet.startswith("4"):
+            if self.account_id not in USERS: return
+            
+            # FIX: Force slot to be a string (e.g. 1 -> "1")
+            slot = str(USERS[self.account_id]["slot"])
+            
+            current_room_name = USERS[self.account_id].get("room")
+            if not current_room_name or current_room_name not in self.server.rooms:
+                return
+
+            room = self.server.rooms[current_room_name]
+            room["players"].add(self.account_id)
+
+            raw = packet[1:] # Strip Type (e.g. "1")
+            
+            if len(raw) >= 10:
+                # 1. READ 5 DIGITS (e.g., "05175")
+                x_str = raw[0:5]
+                y_str = raw[5:10]
+                rest = raw[10:]
+                
+                try:
+                    # 2. 5-Digit Precision Fix
+                    val_x = int(x_str)
+                    val_y = int(y_str)
                     
-                    if peer_acc in USERS:
-                        try:
-                            USERS[peer_acc]["socket"].sendall(payload.encode("utf-8") + b"\x00")
-                        except:
-                            pass
+                    x_final = str(val_x).zfill(5)
+                    y_final = str(val_y).zfill(5)
+
+                    # 3. CONSTRUCT PAYLOAD
+                    # Structure: M + Slot(3) + Type(1) + X(5) + Y(5) + Rest
+                    # We ensure slot is 3 chars (e.g. "1" -> "001")
+                    safe_slot = slot.zfill(3)
+                    
+                    payload = "M" + safe_slot + packet[0] + x_final + y_final + rest
+                        
+                except ValueError:
+                    # Fallback
+                    payload = "M" + slot.zfill(3) + packet
+            else:
+                payload = "M" + slot.zfill(3) + packet
+
+            # 4. BROADCAST
+            for peer_acc in list(room["players"]):
+                if peer_acc == self.account_id: continue
+                if peer_acc in USERS:
+                    try: USERS[peer_acc]["socket"].sendall(payload.encode("utf-8") + b"\x00")
+                    except: pass
+
+        # === 2. SHOOTING (Types 2, 3) ===
+        elif packet.startswith("2") or packet.startswith("3"):
+            # Retrieve room safely
+            if self.account_id in USERS:
+                current_room_name = USERS[self.account_id].get("room")
+                if current_room_name and current_room_name in self.server.rooms:
+                    room = self.server.rooms[current_room_name]
+                    
+                    # Just insert ID and forward
+                    payload = packet[0] + self.account_id.zfill(3) + packet[1:]
+                    
+                    for peer_acc in list(room["players"]):
+                        if peer_acc == self.account_id: continue
+                        if peer_acc in USERS:
+                            try: USERS[peer_acc]["socket"].sendall(payload.encode("utf-8") + b"\x00")
+                            except: pass
 
         # ROOM LIST REQUEST
         elif packet == "01":
