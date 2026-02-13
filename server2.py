@@ -65,10 +65,30 @@ if os.path.exists(DB_FILE):
             line = line.strip()
             if not line:
                 continue
-            user, pwd_hash, acc_id = line.split(";")
-            USER_DB[user] = (pwd_hash, acc_id)
+            parts = line.split(";")
+            
+            # Map parts to names safely
+            # Format: user;hash;id;level;gender;h_m;h_c;b_m;b_c;bounty;kills;deaths;wins;rounds;wanted
+            u_data = {
+                "password_hash": parts[1] if len(parts) > 1 else "",
+                "account_id": parts[2] if len(parts) > 2 else "0",
+                "level": parts[3] if len(parts) > 3 else "0",
+                "gender": parts[4] if len(parts) > 4 else "0",
+                "head_model": parts[5] if len(parts) > 5 else "00",
+                "head_color": parts[6] if len(parts) > 6 else "00",
+                "body_model": parts[7] if len(parts) > 7 else "00",
+                "body_color": parts[8] if len(parts) > 8 else "00",
+                "bounty": parts[9] if len(parts) > 9 else "0",
+                "kills": parts[10] if len(parts) > 10 else "0",
+                "deaths": parts[11] if len(parts) > 11 else "0",
+                "wins": parts[12] if len(parts) > 12 else "0",
+                "rounds": parts[13] if len(parts) > 13 else "0",
+                "wanted": parts[14] if len(parts) > 14 else "0",
+            }
+            
+            USER_DB[parts[0]] = u_data
             try:
-                max_id = max(max_id, int(acc_id))
+                max_id = max(max_id, int(u_data["account_id"]))
             except ValueError:
                 pass
     next_id = max_id + 1
@@ -79,77 +99,172 @@ def save_user(username: str, password: str) -> str:
     acc_id = str(next_id)
     next_id += 1
 
-    USER_DB[username] = (h, acc_id)
+    # Create new user dict with defaults
+    new_user = {
+        "password_hash": h,
+        "account_id": acc_id,
+        "level": "0", "gender": "0",
+        "head_model": "00", "head_color": "00",
+        "body_model": "00", "body_color": "00",
+        "bounty": "0", "kills": "0", "deaths": "0",
+        "wins": "0", "rounds": "0", "wanted": "0"
+    }
+
+    USER_DB[username] = new_user
+
+    # Append to file
     with open(DB_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{username};{h};{acc_id}\n")
+        line = (f"{username};{h};{acc_id};"
+                f"{new_user['level']};{new_user['gender']};"
+                f"{new_user['head_model']};{new_user['head_color']};"
+                f"{new_user['body_model']};{new_user['body_color']};"
+                f"{new_user['bounty']};{new_user['kills']};"
+                f"{new_user['deaths']};{new_user['wins']};"
+                f"{new_user['rounds']};{new_user['wanted']}\n")
+        f.write(line)
     return acc_id
 
 ###############################################################################
 # Packet builders (MATCH AS3 EXPECTATIONS)
 ###############################################################################
 
+# def auth_packet(account_id: str) -> bytes:
+#     """
+#     updateUserFromAuthenticate(param2):
+#       name20 + level + gender + headM2 + headC2 + bodyM2 + bodyC2 + stats5 + wanted
+#     """
+#     username = USERS[account_id]["username"]
+#     name20 = fmt_name_20(username)
+
+#     level = USER_DB[username]["level"]
+#     gender = USER_DB[username]["gender"]
+#     head_model = USER_DB[username]["head_model"]
+#     head_color = USER_DB[username]["head_color"]
+#     body_model = USER_DB[username]["body_model"]
+#     body_color = USER_DB[username]["body_color"]
+#     bounty = USER_DB[username]["bounty"]
+#     kills = USER_DB[username]["kills"]
+#     deaths = USER_DB[username]["deaths"]
+#     wins = USER_DB[username]["wins"]
+#     rounds = USER_DB[username]["rounds"]
+
+#     stats5 = "{bounty};{kills};{deaths};{wins};{rounds}"
+#     wanted = USER_DB[username]["wanted"]
+
+#     payload = f"{name20}{level}{gender}{head_model}{head_color}{body_model}{body_color}{stats5}{wanted}"
+#     return f"A{wire_id(account_id)}{payload}\x00".encode("utf-8")
+
+# def lobby_user_packet(account_id: str) -> bytes:
+#     """
+#     updateUserFromLobbyHandshake(param2):
+#       name20 + stats6 + wanted
+#     """
+#     if USERS[account_id].get("room") != "_":
+#         return b""
+
+#     username = USERS[account_id]["username"]
+#     name20 = fmt_name_20(username)
+
+#     level = USER_DB[username]["level"]
+#     bounty = USER_DB[username]["bounty"]
+#     kills = USER_DB[username]["kills"]
+#     deaths = USER_DB[username]["deaths"]
+#     wins = USER_DB[username]["wins"]
+#     rounds = USER_DB[username]["rounds"]
+
+#     stats6 = "{level};{bounty};{kills};{deaths};{wins};{rounds}"
+#     wanted = USER_DB[username]["wanted"]
+
+#     payload = f"{name20}{stats6}{wanted}"
+#     return f"U{wire_id(account_id)}{payload}\x00".encode("utf-8")
+
+# def game_user_packet(account_id: str) -> bytes:
+#     u = USERS[account_id]
+    
+#     # 1. NAME (20 chars)
+#     # Ensure we strip invalid chars and pad correctly
+#     raw = (u["username"] or "Player").replace("#", "")
+#     clean = "".join(c for c in raw if 32 <= ord(c) <= 126)
+#     name_20 = ("#" + clean).rjust(20, "#")[-20:]
+
+#     # 2. HEADER (36 chars)
+#     # Prefix: "00100" (5 chars)
+#     # Name:   20 chars
+#     # Suffix: "10101010120" (11 chars)
+#     # breakdown: Gen(1) Head(01) HCol(01) Body(01) BCol(01) Team(2) State(0)
+    
+#     # THIS IS THE CRITICAL LINE:
+#     header_raw = "00100" + name_20 + "10101010120"
+    
+#     # Force exactly 36 chars length
+#     header_36 = header_raw[:36].ljust(36, "0")
+
+#     # 3. VARIABLES
+#     # Pistol Enabled (Index 0 set to 1)
+#     variable_data = "0;0;0;0;1000000000000000"
+
+#     payload = "U" + wire_id(account_id) + header_36 + variable_data + "\x00"
+#     return payload.encode("utf-8")
+
 def auth_packet(account_id: str) -> bytes:
-    """
-    updateUserFromAuthenticate(param2):
-      name20 + level + gender + headM2 + headC2 + bodyM2 + bodyC2 + stats5 + wanted
-    """
     username = USERS[account_id]["username"]
     name20 = fmt_name_20(username)
-
-    level = "0"
-    gender = "0"
-    head_model = "00"
-    head_color = "00"
-    body_model = "00"
-    body_color = "00"
-
-    stats5 = "0;0;0;0;0"
-    wanted = "0"
+    
+    # Access by Key
+    data = USER_DB[username] 
+    
+    level = data["level"]
+    gender = data["gender"]
+    head_model = data["head_model"]
+    head_color = data["head_color"]
+    body_model = data["body_model"]
+    body_color = data["body_color"]
+    
+    stats5 = f"{data['bounty']};{data['kills']};{data['deaths']};{data['wins']};{data['rounds']}"
+    wanted = data["wanted"]
 
     payload = f"{name20}{level}{gender}{head_model}{head_color}{body_model}{body_color}{stats5}{wanted}"
     return f"A{wire_id(account_id)}{payload}\x00".encode("utf-8")
 
 def lobby_user_packet(account_id: str) -> bytes:
-    """
-    updateUserFromLobbyHandshake(param2):
-      name20 + stats6 + wanted
-    """
     if USERS[account_id].get("room") != "_":
         return b""
 
     username = USERS[account_id]["username"]
     name20 = fmt_name_20(username)
-
-    stats6 = "0;0;0;0;0;0"
-    wanted = "0"
+    data = USER_DB[username]
+    
+    # stats6: level;bounty;kills;deaths;wins;rounds
+    stats6 = f"{data['level']};{data['bounty']};{data['kills']};{data['deaths']};{data['wins']};{data['rounds']}"
+    wanted = data["wanted"]
 
     payload = f"{name20}{stats6}{wanted}"
     return f"U{wire_id(account_id)}{payload}\x00".encode("utf-8")
 
 def game_user_packet(account_id: str) -> bytes:
     u = USERS[account_id]
+    username = u["username"]
+    name20 = fmt_name_20(username)
     
-    # 1. NAME (20 chars)
-    # Ensure we strip invalid chars and pad correctly
-    raw = (u["username"] or "Player").replace("#", "")
-    clean = "".join(c for c in raw if 32 <= ord(c) <= 126)
-    name_20 = ("#" + clean).rjust(20, "#")[-20:]
+    data = USER_DB[username]
+    
+    # Prefix: "00" + 3-digit slot
+    prefix_5 = ("00" + str(u["slot"]).zfill(3))[:5]
+    
+    # Graphics
+    gender = data["gender"]
+    h_m = data["head_model"]
+    h_c = data["head_color"]
+    b_m = data["body_model"]
+    b_c = data["body_color"]
+    gfx_11 = f"{gender}{h_m}{h_c}{b_m}{b_c}10" # 1=Team, 0=State
 
-    # 2. HEADER (36 chars)
-    # Prefix: "00100" (5 chars)
-    # Name:   20 chars
-    # Suffix: "10101010120" (11 chars)
-    # breakdown: Gen(1) Head(01) HCol(01) Body(01) BCol(01) Team(2) State(0)
-    
-    # THIS IS THE CRITICAL LINE:
-    header_raw = "00100" + name_20 + "10101010120"
-    
-    # Force exactly 36 chars length
+    header_raw = prefix_5 + name20 + gfx_11
     header_36 = header_raw[:36].ljust(36, "0")
 
-    # 3. VARIABLES
-    # Pistol Enabled (Index 0 set to 1)
-    variable_data = "0;0;0;0;1000000000000000"
+    stats_part = f"{data['bounty']};{data['kills']};{data['deaths']};{data['wins']}"
+    weapons_part = "1000000000000000"
+    variable_data = f"{stats_part};{weapons_part}"
 
     payload = "U" + wire_id(account_id) + header_36 + variable_data + "\x00"
     return payload.encode("utf-8")
@@ -394,12 +509,14 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             username, password = creds.split(";", 1)
             pwd_hash = md5_hash(password)
 
-            # handshake ack first
             self.send(b"00;1\x00")
             print("[<] Sent delayed handshake")
 
             if username in USER_DB:
-                stored_hash, acc_id = USER_DB[username]
+                # Access by key
+                stored_hash = USER_DB[username]["password_hash"]
+                acc_id = USER_DB[username]["account_id"]
+                
                 if pwd_hash != stored_hash:
                     self.send(b"10;0;Incorrect password\x00")
                     return
@@ -580,43 +697,6 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     )
 
         # === NEW: RELAY MOVEMENT & ACTIONS ===
-        # # === MOVEMENT (Types 1, 4) ===
-        # elif packet.startswith("1") or packet.startswith("4"):
-        #     # 1. Validation
-        #     if self.account_id not in USERS: return
-            
-        #     current_room_name = USERS[self.account_id].get("room")
-        #     if not current_room_name or current_room_name not in self.server.rooms:
-        #         return
-
-        #     room = self.server.rooms[current_room_name]
-        #     room["players"].add(self.account_id)
-
-        #     # 2. COORDINATE FIX (Preserve 5-Digit Precision)
-        #     raw = packet[1:] # Strip Type
-            
-        #     if len(raw) >= 10:
-        #         x_part = raw[0:5]   # 5 digits (e.g. 02950)
-        #         y_part = raw[5:10]  # 5 digits (e.g. 00565)
-        #         rest = raw[10:]
-                
-        #         # DEBUG PRINT: Show exactly what we parsed
-        #         if packet.startswith("1"):
-        #              print(f"[DEBUG] {self.account_id} Move: Raw={packet} -> X={x_part} Y={y_part}")
-                
-        #         # Rebuild: Type + AccountID(3) + X(5) + Y(5) + Rest
-        #         payload = packet[0] + self.account_id.zfill(3) + x_part + y_part + rest
-        #     else:
-        #         payload = packet[0] + self.account_id.zfill(3) + raw
-
-        #     # 3. Broadcast
-        #     for peer_acc in list(room["players"]):
-        #         if peer_acc == self.account_id: continue
-        #         if peer_acc in USERS:
-        #             try: USERS[peer_acc]["socket"].sendall(payload.encode("utf-8") + b"\x00"), print('[<] Sent Movement Payload: ', payload.encode("utf-8"))
-        #             except: pass
-
-        # === MOVEMENT (Types 1, 4) ===
         # === MOVEMENT (Types 1, 4) ===
         elif packet.startswith("1") or packet.startswith("4"):
             if self.account_id not in USERS: return
