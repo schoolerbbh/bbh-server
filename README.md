@@ -5,8 +5,9 @@ NOTES: This server is currently local only (meaning it's essentially singleplaye
 
 1. Clone/Download the files
 2. Move the "assets.swf" and "Constants.xml" files to a folder called "_assets" that is in the same directory that you downloaded the rest of the data (e.g. server2.py)
-3. Install Python and dependencies if not already installed
-4. In a terminal/PowerShell window, navigate to the directory containing the files and run "python server2.py"
-5. open the bbh.swf file using Adobe Flash Player Projector.
-6. Connect and enter a username and password on the login screen (NOT create account!). It will log you in and create the account you asked for. If you forget your password just delete the Users.db file and start again
-7. Enjoy! Currently you can get in lobby and ingame, but multiple users cannot see each other in the same game.
+3. Install JPEXS Flash Player Projector and open the bbh.swf file. Navigare to boxhead.assets.AssetLoader and edit the ActionScript file to display the correct location of the assets.swf and constants.xml (lines 78, 128, and 140).
+4. Install Python and dependencies if not already installed
+5. In a terminal/PowerShell window, navigate to the directory containing the files and run "python server2.py"
+6. open the bbh.swf file using Adobe Flash Player Projector.
+7. Connect and enter a username and password on the login screen (NOT create account!). It will log you in and create the account you asked for. If you forget your password just delete the Users.db file and start again
+8. Enjoy! Currently you can get in lobby and ingame, but kills, deaths, money/cubes, and weapons are broken and/or don't work properly.
