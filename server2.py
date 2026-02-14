@@ -784,19 +784,27 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
         elif packet == "01":
             self.send(build_room_list_bytes(self.server))
             return
-
-        # ROOM INFO REQUEST
+        
+        # === ROOM INFO REQUEST (04) ===
         elif packet.startswith("04"):
             room_name = normalize_room_name(packet[2:])
             room = self.server.rooms.get(room_name)
+            
             if not room or room_name == "_":
                 return
 
-            gameType = "1"
-            useCustom = "0"
-            mapID = "A"
+            # Pull header saved during 02 (Fallback to "100" just in case)
+            header = room.get("header", "100")
+            gameType = header[0] if len(header) > 0 else "1"
+            useCustom = header[1] if len(header) > 1 else "0"
+            
+            # The map ID is the first character in the settings_string (e.g. "D" from "DECBAGF")
+            settings = room.get("settings_string", "")
+            mapID = settings[0] if settings else "A"
+            
             players = f"{len(room['players']):02d}"
 
+            # Calculate time
             length = room.get("round_length", 600)
             start = room.get("round_start") or time.time()
             elapsed = int(time.time() - start)
@@ -806,7 +814,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             self.send(msg.encode("utf-8"))
             return
 
-        # CREATE ROOM
+        # === CREATE ROOM (02) ===
         elif packet.startswith("02"):
             self.leave_current_room(self.account_id)
 
@@ -814,7 +822,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             if ";" not in payload:
                 return
 
-            header = payload[:3]  # gameType/useCustom/isPrivate
+            header = payload[:3]  # gameType(1)/useCustom(1)/isPrivate(1)
             rest = payload[3:]
             room_part, settings = rest.split(";", 1)
 
@@ -824,6 +832,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             self.server.rooms[room_name] = {
                 "name": room_name,
                 "settings_string": settings,
+                "header": header,  # FIX: Store the header so 04 can use it!
                 "players": {self.account_id},
                 "round_start": time.time(),
                 "round_length": 600,
@@ -835,7 +844,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             # Tell creator it joined
             self.send(f"C{wire_id(self.account_id)}\x00".encode("utf-8"))
 
-            # Now initialize creator like a game-room joiner (same as JOIN ROOM non-lobby path)
+            # Now initialize creator like a game-room joiner
             room = self.server.rooms[room_name]
             remaining = room["round_length"]
             self.send(f"p{remaining}\x00".encode("utf-8"))
