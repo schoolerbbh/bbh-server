@@ -124,6 +124,22 @@ def save_user(username: str, password: str) -> str:
         f.write(line)
     return acc_id
 
+def save_all_users():
+    """Overwrites the DB file with the current state of USER_DB"""
+    try:
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            for uname, data in USER_DB.items():
+                line = (f"{uname};{data['password_hash']};{data['account_id']};"
+                        f"{data['level']};{data['gender']};"
+                        f"{data['head_model']};{data['head_color']};"
+                        f"{data['body_model']};{data['body_color']};"
+                        f"{data['bounty']};{data['kills']};"
+                        f"{data['deaths']};{data['wins']};"
+                        f"{data['rounds']};{data['wanted']}\n")
+                f.write(line)
+    except Exception as e:
+        print(f"Error saving DB: {e}")
+
 ###############################################################################
 # Packet builders (MATCH AS3 EXPECTATIONS)
 ###############################################################################
@@ -894,19 +910,62 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             return
 
         # --- customization ---
+        # elif packet.startswith("0d"):
+        #     room_name = USERS[self.account_id].get("room")
+        #     # rebroadcast updated handshake so peers see the new look
+        #     if room_name and room_name in self.server.rooms:
+        #         for peer_acc in self.server.rooms[room_name]["players"]:
+        #             if peer_acc == self.account_id:
+        #                 continue
+        #             try:
+        #                 USERS[peer_acc]["socket"].sendall(f"C{wire_id(self.account_id)}\x00".encode("utf-8"))
+        #                 USERS[peer_acc]["socket"].sendall(game_user_packet(self.account_id))
+        #             except OSError:
+        #                 pass
+        #     return
+
+        # === CUSTOMIZATION (0d) ===
         elif packet.startswith("0d"):
-            room_name = USERS[self.account_id].get("room")
-            # rebroadcast updated handshake so peers see the new look
-            if room_name and room_name in self.server.rooms:
-                for peer_acc in self.server.rooms[room_name]["players"]:
-                    if peer_acc == self.account_id:
-                        continue
-                    try:
-                        USERS[peer_acc]["socket"].sendall(f"C{wire_id(self.account_id)}\x00".encode("utf-8"))
-                        USERS[peer_acc]["socket"].sendall(game_user_packet(self.account_id))
-                    except OSError:
-                        pass
-            return
+            # Ensure the user is authenticated
+            if not getattr(self, "username", None) or self.username not in USER_DB:
+                return
+            
+            cat = packet[2:3]   # Category (0=Head, 1=Body, 2=Gender)
+            data = packet[3:]   # The values
+            
+            db_user = USER_DB[self.username]
+            changed = False
+            
+            if cat == "0" and len(data) >= 4:  # Head
+                db_user["head_model"] = data[0:2]
+                db_user["head_color"] = data[2:4]
+                changed = True
+                
+            elif cat == "1" and len(data) >= 4:  # Body
+                db_user["body_model"] = data[0:2]
+                db_user["body_color"] = data[2:4]
+                changed = True
+                
+            elif cat == "2" and len(data) >= 1:  # Gender
+                db_user["gender"] = data[0:1]
+                changed = True
+                
+            if changed:
+                save_all_users()
+                print(f"[*] Saved customization for {self.username}: {packet}")
+                
+                # If they are currently in a game room, you might need to broadcast 
+                # their new look to other players so they update visually in real-time.
+                current_room_name = USERS[self.account_id].get("room")
+                if current_room_name and current_room_name != "_":
+                    # Generate an updated game U packet for myself and send it to peers
+                    my_update = game_user_packet(self.account_id)
+                    for peer_acc in self.server.rooms[current_room_name]["players"]:
+                        if peer_acc != self.account_id:
+                            try:
+                                USERS[peer_acc]["socket"].sendall(my_update)
+                            except OSError:
+                                pass
 
         # --- round time request ---
         elif packet == "p":
