@@ -144,84 +144,6 @@ def save_all_users():
 # Packet builders (MATCH AS3 EXPECTATIONS)
 ###############################################################################
 
-# def auth_packet(account_id: str) -> bytes:
-#     """
-#     updateUserFromAuthenticate(param2):
-#       name20 + level + gender + headM2 + headC2 + bodyM2 + bodyC2 + stats5 + wanted
-#     """
-#     username = USERS[account_id]["username"]
-#     name20 = fmt_name_20(username)
-
-#     level = USER_DB[username]["level"]
-#     gender = USER_DB[username]["gender"]
-#     head_model = USER_DB[username]["head_model"]
-#     head_color = USER_DB[username]["head_color"]
-#     body_model = USER_DB[username]["body_model"]
-#     body_color = USER_DB[username]["body_color"]
-#     bounty = USER_DB[username]["bounty"]
-#     kills = USER_DB[username]["kills"]
-#     deaths = USER_DB[username]["deaths"]
-#     wins = USER_DB[username]["wins"]
-#     rounds = USER_DB[username]["rounds"]
-
-#     stats5 = "{bounty};{kills};{deaths};{wins};{rounds}"
-#     wanted = USER_DB[username]["wanted"]
-
-#     payload = f"{name20}{level}{gender}{head_model}{head_color}{body_model}{body_color}{stats5}{wanted}"
-#     return f"A{wire_id(account_id)}{payload}\x00".encode("utf-8")
-
-# def lobby_user_packet(account_id: str) -> bytes:
-#     """
-#     updateUserFromLobbyHandshake(param2):
-#       name20 + stats6 + wanted
-#     """
-#     if USERS[account_id].get("room") != "_":
-#         return b""
-
-#     username = USERS[account_id]["username"]
-#     name20 = fmt_name_20(username)
-
-#     level = USER_DB[username]["level"]
-#     bounty = USER_DB[username]["bounty"]
-#     kills = USER_DB[username]["kills"]
-#     deaths = USER_DB[username]["deaths"]
-#     wins = USER_DB[username]["wins"]
-#     rounds = USER_DB[username]["rounds"]
-
-#     stats6 = "{level};{bounty};{kills};{deaths};{wins};{rounds}"
-#     wanted = USER_DB[username]["wanted"]
-
-#     payload = f"{name20}{stats6}{wanted}"
-#     return f"U{wire_id(account_id)}{payload}\x00".encode("utf-8")
-
-# def game_user_packet(account_id: str) -> bytes:
-#     u = USERS[account_id]
-    
-#     # 1. NAME (20 chars)
-#     # Ensure we strip invalid chars and pad correctly
-#     raw = (u["username"] or "Player").replace("#", "")
-#     clean = "".join(c for c in raw if 32 <= ord(c) <= 126)
-#     name_20 = ("#" + clean).rjust(20, "#")[-20:]
-
-#     # 2. HEADER (36 chars)
-#     # Prefix: "00100" (5 chars)
-#     # Name:   20 chars
-#     # Suffix: "10101010120" (11 chars)
-#     # breakdown: Gen(1) Head(01) HCol(01) Body(01) BCol(01) Team(2) State(0)
-    
-#     # THIS IS THE CRITICAL LINE:
-#     header_raw = "00100" + name_20 + "10101010120"
-    
-#     # Force exactly 36 chars length
-#     header_36 = header_raw[:36].ljust(36, "0")
-
-#     # 3. VARIABLES
-#     # Pistol Enabled (Index 0 set to 1)
-#     variable_data = "0;0;0;0;1000000000000000"
-
-#     payload = "U" + wire_id(account_id) + header_36 + variable_data + "\x00"
-#     return payload.encode("utf-8")
-
 def auth_packet(account_id: str) -> bytes:
     username = USERS[account_id]["username"]
     name20 = fmt_name_20(username)
@@ -278,7 +200,7 @@ def game_user_packet(account_id: str) -> bytes:
     header_raw = prefix_5 + name20 + gfx_11
     header_36 = header_raw[:36].ljust(36, "0")
 
-    stats_part = f"{data['bounty']};{data['kills']};{data['deaths']};{data['wins']}"
+    stats_part = f"10000;{data['kills']};{data['deaths']};{data['wins']}"
     weapons_part = "1000000000000000"
     variable_data = f"{stats_part};{weapons_part}"
 
