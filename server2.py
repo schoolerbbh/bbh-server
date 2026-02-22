@@ -179,33 +179,86 @@ def lobby_user_packet(account_id: str) -> bytes:
     payload = f"{name20}{stats6}{wanted}"
     return f"U{wire_id(account_id)}{payload}\x00".encode("utf-8")
 
+
 def game_user_packet(account_id: str) -> bytes:
     u = USERS[account_id]
     username = u["username"]
     name20 = fmt_name_20(username)
-    
     data = USER_DB[username]
     
-    # Prefix: "00" + 3-digit slot
-    prefix_5 = ("00" + str(u["slot"]).zfill(3))[:5]
+    # 1. FIXED HEADER (Exactly 35 characters)
+    weapon_2 = "00"
+    hp_3 = "100"
     
-    # Graphics
-    gender = data["gender"]
-    h_m = data["head_model"]
-    h_c = data["head_color"]
-    b_m = data["body_model"]
-    b_c = data["body_color"]
-    gfx_11 = f"{gender}{h_m}{h_c}{b_m}{b_c}10" # 1=Team, 0=State
+    # Name is strictly 20 chars (handled by fmt_name_20)
+    
+    # Graphics and Team (10 chars)
+    # Using zfill(2) ensures single digits become "01", "02", maintaining strict lengths
+    gender_1 = str(data.get('gender', '1'))[:1]
+    hm_2 = str(data.get('head_model', '0')).zfill(2)
+    hc_2 = str(data.get('head_color', '0')).zfill(2)
+    bm_2 = str(data.get('body_model', '0')).zfill(2)
+    bc_2 = str(data.get('body_color', '0')).zfill(2)
+    team_1 = "0"
+    
+    fixed_header = weapon_2 + hp_3 + name20 + gender_1 + hm_2 + hc_2 + bm_2 + bc_2 + team_1
 
-    header_raw = prefix_5 + name20 + gfx_11
-    header_36 = header_raw[:36].ljust(36, "0")
+    # 2. DELIMITED STATS (Exactly 4 semicolons required!)
+    score = "10000"
+    kills = str(data.get("kills", "0"))
+    deaths = str(data.get("deaths", "0"))
+    bounty = "0"
+    stats_string = f"{score};{kills};{deaths};{bounty};"
+    
+    # 3. UPGRADES (Chunks of 3: 2 for weapon, 1 for flag). We can leave it blank.
+    upgrades = ""
+    
+    # 4. WANTED BIT (Always the last character)
+    wanted = str(data.get("wanted", "0"))
 
-    stats_part = f"10000;{data['kills']};{data['deaths']};{data['wins']}"
-    weapons_part = "1000000000000000"
-    variable_data = f"{stats_part};{weapons_part}"
-
-    payload = "U" + wire_id(account_id) + header_36 + variable_data + "\x00"
+    # Combine all parts
+    variable_data = stats_string + upgrades + wanted
+    
+    # Construct: U + WireID + FixedHeader + VariableData + Null
+    payload = "U" + wire_id(account_id) + fixed_header + variable_data + "\x00"
     return payload.encode("utf-8")
+
+# def game_user_packet(account_id: str) -> bytes:
+#     u = USERS[account_id]
+#     username = u["username"]
+#     name20 = fmt_name_20(username)
+#     data = USER_DB[username]
+    
+#     # 1. FIXED HEADER (Exactly 36 bytes - proven to work)
+#     prefix_5 = ("00" + str(u["slot"]).zfill(3))[:5]
+#     gfx_11 = f"{data['gender']}{data['head_model']}{data['head_color']}{data['body_model']}{data['body_color']}10"
+    
+#     header_raw = prefix_5 + name20 + gfx_11
+#     header_36 = header_raw[:36].ljust(36, "0")
+
+#     # 2. DELIMITED STATS ARRAY
+#     score = "10000"                       # stats[0]
+#     kills = str(data.get("kills", "0"))   # stats[1]
+#     deaths = str(data.get("deaths", "0")) # stats[2]
+    
+#     # Blast '100' into every remaining slot before upgrades.
+#     # If the health bar fills up, we know for a fact it's one of these slots.
+#     s3 = "100000"
+#     s4 = "100000"
+#     s5 = "100000"
+#     s6 = "100000"
+#     s7 = "100000"
+    
+#     stats_string = f"{score};{kills};{deaths};{s3};{s4};{s5};{s6};{s7}"
+    
+#     # 3. UPGRADES ARRAY
+#     upgrades = "1001001001001100"
+    
+#     variable_data = f"{stats_string};{upgrades}"
+
+#     # Construct: U + WireID + Header36 + Stats + Null
+#     payload = "U" + wire_id(account_id) + header_36 + variable_data + "\x00"
+#     return payload.encode("utf-8")
 
 def spawn_packet(account_id: str, x=200, y=200, direction=0, hp=100):
     # NOTE: opcode MUST be 1 char before the 3-char sender id
@@ -519,7 +572,8 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
 
             # IMPORTANT: send self game handshake
             self.send(game_user_packet(self.account_id))
-            self.send(f"6{wire_id(self.account_id)}110001000000000000000\x00".encode("utf-8"))
+            # Blasting "100" into the positional and state slots 
+            self.send(f"6{wire_id(self.account_id)}110001000000990000000\x00".encode("utf-8"))
 
 
             # sync peers
@@ -619,7 +673,8 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     # REMOVED: self.send(spawn_packet(peer_acc)) <--- DELETE THIS LINE
                     
                     # Only send the "Spawn Ready" signal (Opcode 6)
-                    self.send(f"6{wire_id(peer_acc)}110001000000000000000\x00".encode("utf-8"))
+                    # Blasting "100" into the positional and state slots 
+                    self.send(f"6{wire_id(peer_acc)}110001000000990000000\x00".encode("utf-8"))
 
                 # --- SPAWN JOINER FOR EXISTING PLAYERS ---
                 # REMOVED: spawn = spawn_packet(self.account_id) <--- DELETE THIS LINE
@@ -631,7 +686,8 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     
                     # Only send the "Spawn Ready" signal
                     USERS[peer_acc]["socket"].sendall(
-                        f"6{wire_id(self.account_id)}110001000000000000000\x00".encode("utf-8")
+                        # Blasting "100" into the positional and state slots 
+                        self.send(f"6{wire_id(peer_acc)}110001000000990000000\x00".encode("utf-8"))
                     )
 
         # === NEW: RELAY MOVEMENT & ACTIONS ===
