@@ -223,43 +223,6 @@ def game_user_packet(account_id: str) -> bytes:
     payload = "U" + wire_id(account_id) + fixed_header + variable_data + "\x00"
     return payload.encode("utf-8")
 
-# def game_user_packet(account_id: str) -> bytes:
-#     u = USERS[account_id]
-#     username = u["username"]
-#     name20 = fmt_name_20(username)
-#     data = USER_DB[username]
-    
-#     # 1. FIXED HEADER (Exactly 36 bytes - proven to work)
-#     prefix_5 = ("00" + str(u["slot"]).zfill(3))[:5]
-#     gfx_11 = f"{data['gender']}{data['head_model']}{data['head_color']}{data['body_model']}{data['body_color']}10"
-    
-#     header_raw = prefix_5 + name20 + gfx_11
-#     header_36 = header_raw[:36].ljust(36, "0")
-
-#     # 2. DELIMITED STATS ARRAY
-#     score = "10000"                       # stats[0]
-#     kills = str(data.get("kills", "0"))   # stats[1]
-#     deaths = str(data.get("deaths", "0")) # stats[2]
-    
-#     # Blast '100' into every remaining slot before upgrades.
-#     # If the health bar fills up, we know for a fact it's one of these slots.
-#     s3 = "100000"
-#     s4 = "100000"
-#     s5 = "100000"
-#     s6 = "100000"
-#     s7 = "100000"
-    
-#     stats_string = f"{score};{kills};{deaths};{s3};{s4};{s5};{s6};{s7}"
-    
-#     # 3. UPGRADES ARRAY
-#     upgrades = "1001001001001100"
-    
-#     variable_data = f"{stats_string};{upgrades}"
-
-#     # Construct: U + WireID + Header36 + Stats + Null
-#     payload = "U" + wire_id(account_id) + header_36 + variable_data + "\x00"
-#     return payload.encode("utf-8")
-
 def spawn_packet(account_id: str, x=200, y=200, direction=0, hp=100):
     # NOTE: opcode MUST be 1 char before the 3-char sender id
     # Using "1" here as a safe framing match; payload format may still need tuning.
@@ -573,7 +536,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             # IMPORTANT: send self game handshake
             self.send(game_user_packet(self.account_id))
             # Blasting "100" into the positional and state slots 
-            self.send(f"6{wire_id(self.account_id)}110001000000990000000\x00".encode("utf-8"))
+            self.send(f"M{wire_id(self.account_id)}6100\x00".encode("utf-8"))
 
 
             # sync peers
@@ -674,7 +637,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     
                     # Only send the "Spawn Ready" signal (Opcode 6)
                     # Blasting "100" into the positional and state slots 
-                    self.send(f"6{wire_id(peer_acc)}110001000000990000000\x00".encode("utf-8"))
+                    self.send(f"M{wire_id(peer_acc)}6100\x00".encode("utf-8"))
 
                 # --- SPAWN JOINER FOR EXISTING PLAYERS ---
                 # REMOVED: spawn = spawn_packet(self.account_id) <--- DELETE THIS LINE
@@ -687,7 +650,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     # Only send the "Spawn Ready" signal
                     USERS[peer_acc]["socket"].sendall(
                         # Blasting "100" into the positional and state slots 
-                        self.send(f"6{wire_id(peer_acc)}110001000000990000000\x00".encode("utf-8"))
+                        self.send(f"M{wire_id(peer_acc)}6100\x00".encode("utf-8"))
                     )
 
         # === NEW: RELAY MOVEMENT & ACTIONS ===
@@ -862,13 +825,53 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 self.relay_state_to_room(room_name, packet)
             return
         
-        # --- SPAWN READY ---
+        # === HIT / DAMAGE EVENT (Opcode 6) ===
         elif packet.startswith("6"):
+            # VICTIM sends this when they detect a hit locally.
+            # Format: '6' + AttackerID(3) + Weapon(2) + Damage(2)
+            # Example: '60010007' -> "Attacker 001 hit me for 7 damage"
+            if len(packet) < 8:
+                return
+
+            attacker_wire = packet[1:4]
+            try:
+                damage = int(packet[6:8])
+            except ValueError:
+                return
+
+            # 1. The TARGET is the client who sent the packet!
+            target_acc = self.account_id
+            if not target_acc or target_acc not in USERS:
+                return
+
+            target_slot = USERS[target_acc].get("slot")
+            if target_slot is None:
+                return
+            target_wire = f"{target_slot:03d}"
+
+            # 2. Calculate the Target's new HP
+            current_hp = USERS[target_acc].get("hp", 100)
+            new_hp = max(0, current_hp - damage)
+            USERS[target_acc]["hp"] = new_hp
+
+            # 3. Formulate the packet using the Target's wire ID
+            out_str = f"M{target_wire}6{new_hp:03d}"
+            out = out_str.encode("utf-8") + b"\x00"
+
+            # 4. Broadcast to everyone in the room
             room_name = USERS[self.account_id].get("room")
-            if room_name:
-                self.relay_state_to_room(room_name, packet)
+            if room_name and room_name in self.server.rooms:
+                room = self.server.rooms[room_name]
+                for peer_acc in room["players"]:
+                    if peer_acc in USERS:
+                        try:
+                            USERS[peer_acc]["socket"].sendall(out)
+                        except OSError:
+                            pass
+
+            print(f"[DEBUG] Target {target_wire} hit by {attacker_wire} for {damage}. New HP: {new_hp:03d}")
             return
-        
+
         # --- PLAYER DEATH / DESPAWN ---
         elif packet.startswith("7"):
             room_name = USERS[self.account_id].get("room")
@@ -895,21 +898,6 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             if room_name:
                 self.relay_chat9_to_room(room_name, packet, include_self=True)
             return
-
-        # --- customization ---
-        # elif packet.startswith("0d"):
-        #     room_name = USERS[self.account_id].get("room")
-        #     # rebroadcast updated handshake so peers see the new look
-        #     if room_name and room_name in self.server.rooms:
-        #         for peer_acc in self.server.rooms[room_name]["players"]:
-        #             if peer_acc == self.account_id:
-        #                 continue
-        #             try:
-        #                 USERS[peer_acc]["socket"].sendall(f"C{wire_id(self.account_id)}\x00".encode("utf-8"))
-        #                 USERS[peer_acc]["socket"].sendall(game_user_packet(self.account_id))
-        #             except OSError:
-        #                 pass
-        #     return
 
         # === CUSTOMIZATION (0d) ===
         elif packet.startswith("0d"):
