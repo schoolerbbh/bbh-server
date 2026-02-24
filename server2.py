@@ -374,21 +374,22 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             except OSError:
                 pass
 
-
-    def broadcast_to_room(self, room_name: str, payload: str, exclude_self: bool = True):
-        """
-        Sends: M<senderID><payload>\x00 to everyone in room.
-        """
+    def broadcast_to_room(self, message_bytes):
+        """Sends bytes to everyone in the current user's room and logs it."""
+        room_name = USERS.get(self.account_id, {}).get("room")
         if not room_name or room_name not in self.server.rooms:
             return
-        out = f"M{wire_id(self.account_id)}{payload}\x00".encode("utf-8")
-        for peer_acc in self.server.rooms[room_name]["players"]:
-            if exclude_self and peer_acc == self.account_id:
-                continue
-            try:
-                USERS[peer_acc]["socket"].sendall(out)
-            except OSError:
-                pass
+            
+        players = self.server.rooms[room_name]["players"]
+        for p_acc in list(players):
+            if p_acc in USERS:
+                try:
+                    # Using sendall directly but adding a print so you can see it
+                    USERS[p_acc]["socket"].sendall(message_bytes)
+                except:
+                    continue
+        # This allows you to see the broadcast in your console logs
+        print(f"[BROADCAST] {repr(message_bytes)}")
 
     def leave_current_room(self, account_id: str):
         user = USERS.get(account_id)
@@ -669,6 +670,11 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             room["players"].add(self.account_id)
 
             raw = packet[1:] # Strip Type (e.g. "1")
+
+            if packet.startswith("1") and len(packet) >= 11:
+            # Opcode 1 contains the 10-digit position right after the "1"
+            # Example: '10541600657...' -> '0541600657'
+                USERS[self.account_id]["last_pos"] = packet[1:11]
             
             if len(raw) >= 10:
                 # 1. READ 5 DIGITS (e.g., "05175")
@@ -816,8 +822,11 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
         # Catches Move(1), Rotate(8), Shoot(4), and Loadout(0l)
         elif packet.startswith(("8")) or packet.startswith("0l"):
             # 1. Save state (moved from top of function)
-            if packet.startswith(("8")):
-                USERS[self.account_id]["last_state"] = packet
+            if packet.startswith("8"):
+                    current_hp = USERS[self.account_id].get("hp", 100)
+                    if current_hp <= 0:
+                        USERS[self.account_id]["hp"] = 100
+                        print(f"[SYSTEM] Reset HP for {self.username} (Respawn via Opcode 8)")
             
             # 2. Relay (now guaranteed to run)
             room_name = USERS[self.account_id].get("room")
@@ -825,52 +834,49 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 self.relay_state_to_room(room_name, packet)
             return
         
-        # === HIT / DAMAGE EVENT (Opcode 6) ===
         elif packet.startswith("6"):
-            # VICTIM sends this when they detect a hit locally.
-            # Format: '6' + AttackerID(3) + Weapon(2) + Damage(2)
-            # Example: '60010007' -> "Attacker 001 hit me for 7 damage"
-            if len(packet) < 8:
-                return
-
+            if len(packet) < 8: return
             attacker_wire = packet[1:4]
+            weapon_id = packet[4:6]
             try:
                 damage = int(packet[6:8])
-            except ValueError:
-                return
+            except: return
 
-            # 1. The TARGET is the client who sent the packet!
             target_acc = self.account_id
-            if not target_acc or target_acc not in USERS:
-                return
+            if not target_acc or target_acc not in USERS: return
 
-            target_slot = USERS[target_acc].get("slot")
-            if target_slot is None:
-                return
-            target_wire = f"{target_slot:03d}"
-
-            # 2. Calculate the Target's new HP
+            # GUARD: Stop if already dead to prevent infinite kill loops
             current_hp = USERS[target_acc].get("hp", 100)
+            if current_hp <= 0: return
+
+            # Calculate new HP
             new_hp = max(0, current_hp - damage)
             USERS[target_acc]["hp"] = new_hp
+            
+            target_wire = f"{USERS[target_acc].get('slot', 0):03d}"
 
-            # 3. Formulate the packet using the Target's wire ID
-            out_str = f"M{target_wire}6{new_hp:03d}"
-            out = out_str.encode("utf-8") + b"\x00"
+            # 1. Broadcast HP Update (M...6...)
+            # We construct the FULL message here because your function just sends what it's given
+            hp_out = f"M{target_wire}6{new_hp:03d}\x00".encode("utf-8")
+            self.broadcast_to_room(hp_out)
 
-            # 4. Broadcast to everyone in the room
-            room_name = USERS[self.account_id].get("room")
-            if room_name and room_name in self.server.rooms:
-                room = self.server.rooms[room_name]
-                for peer_acc in room["players"]:
-                    if peer_acc in USERS:
-                        try:
-                            USERS[peer_acc]["socket"].sendall(out)
-                        except OSError:
-                            pass
+            # 2. If dead, handle the Kill sequence
+            if new_hp == 0:
+                print(f"[DEBUG] Target {target_wire} KILLED by {attacker_wire}")
+                
+                room_name = USERS[target_acc].get("room")
+                room = self.server.rooms.get(room_name)
+                b_idx, pos = 0, "0050000500"
+                if room:
+                    b_idx = room.get("bounty_idx", 0)
+                    room["bounty_idx"] = (b_idx + 1) % 100
+                    pos = USERS[target_acc].get("last_pos", pos)
 
-            print(f"[DEBUG] Target {target_wire} hit by {attacker_wire} for {damage}. New HP: {new_hp:03d}")
-            return
+                # Construct the FULL Kill packet (M + Target + 7 + Details)
+                kill_out = f"M{target_wire}7{attacker_wire}{weapon_id}0{b_idx:02d}{pos}\x00".encode("utf-8")
+                
+                # This sends to everyone in the room, including the victim
+                self.broadcast_to_room(kill_out)
 
         # --- PLAYER DEATH / DESPAWN ---
         elif packet.startswith("7"):
@@ -884,8 +890,16 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
         # 2-char 0* opcodes that should be forwarded intact (no framing injection)
         elif packet.startswith(("0k", "0q")):
             room_name = USERS[self.account_id].get("room")
+            
+            # --- RESET HP ON RESPAWN ---
+            if packet == "0k1":
+                if self.account_id in USERS:
+                    USERS[self.account_id]["hp"] = 100
+                    print(f"[SYSTEM] Reset HP for {self.username} (Respawn)")
+            
             if room_name:
-                self.relay_raw_to_room(room_name, packet, include_self=False)
+                # include_self=True ensures your client gets the 'respawn' confirmation
+                self.relay_raw_to_room(room_name, packet, include_self=True)
             return
 
 
