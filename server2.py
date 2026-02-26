@@ -491,6 +491,8 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 "socket": self.request,
                 "room": None,
                 "slot": SLOTS.allocate(acc_id),
+                "hp": 100,
+                "score": 1000, # Starting score or load from DB
             }
 
             self.send(auth_packet(acc_id))
@@ -834,55 +836,55 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 self.relay_state_to_room(room_name, packet)
             return
         
+        # === 1. Damage / Kill Logic (Opcode 6) ===
         elif packet.startswith("6"):
             if len(packet) < 8: return
             attacker_wire = packet[1:4]
             weapon_id = packet[4:6]
-            try:
-                damage = int(packet[6:8])
+            try: damage = int(packet[6:8])
             except: return
 
             target_acc = self.account_id
             if not target_acc or target_acc not in USERS: return
 
-            # GUARD: Stop if already dead to prevent infinite kill loops
+            # GUARD: Stop if already dead.
             current_hp = USERS[target_acc].get("hp", 100)
             if current_hp <= 0: return
 
-            # Calculate new HP
             new_hp = max(0, current_hp - damage)
             USERS[target_acc]["hp"] = new_hp
-            
             target_wire = f"{USERS[target_acc].get('slot', 0):03d}"
 
-            # 1. Broadcast HP Update (M...6...)
-            # We construct the FULL message here because your function just sends what it's given
-            hp_out = f"M{target_wire}6{new_hp:03d}\x00".encode("utf-8")
-            self.broadcast_to_room(hp_out)
+            # Broadcast HP Update
+            self.broadcast_to_room(f"M{target_wire}6{new_hp:03d}\x00".encode("utf-8"))
 
-            # 2. If dead, handle the Kill sequence
             if new_hp == 0:
-                print(f"[DEBUG] Target {target_wire} KILLED by {attacker_wire}")
+                # --- BOUNTY CALCULATION ---
+                victim_score = USERS[target_acc].get("score", 0)
+                drop_amount = int(victim_score * 0.10)
+                USERS[target_acc]["score"] -= drop_amount # Deduct from victim
                 
-                room_name = USERS[target_acc].get("room")
-                room = self.server.rooms.get(room_name)
-                b_idx, pos = 0, "0050000500"
-                if room:
-                    b_idx = room.get("bounty_idx", 0)
-                    room["bounty_idx"] = (b_idx + 1) % 100
-                    pos = USERS[target_acc].get("last_pos", pos)
+                pos = USERS[target_acc].get("last_pos", "0050000500")
+                bounty_str = ""
+                rem = drop_amount
+                # Greedy selection: Yellows -> Reds -> Greys
+                for value, tid in [(1000, "23"), (500, "22"), (250, "21")]:
+                    count = rem // value
+                    for _ in range(count):
+                        bounty_str += f"{tid}{pos}"
+                    rem %= value
 
-                # Construct the FULL Kill packet (M + Target + 7 + Details)
-                kill_out = f"M{target_wire}7{attacker_wire}{weapon_id}0{b_idx:02d}{pos}\x00".encode("utf-8")
-                
-                # This sends to everyone in the room, including the victim
-                self.broadcast_to_room(kill_out)
+                # --- KILL BROADCAST ---
+                # Format: M + Target + 7 + Killer + Weapon + BountyItems
+                kill_out = f"M{target_wire}7{attacker_wire}{weapon_id}{bounty_str}\x00"
+                self.broadcast_to_room(kill_out.encode("utf-8"))
 
         # --- PLAYER DEATH / DESPAWN ---
         elif packet.startswith("7"):
             room_name = USERS[self.account_id].get("room")
             if room_name:
                 self.relay_state_to_room(room_name, packet)
+                print(f"[DEBUG] Broadcast DEATH: Packet={packet}")
             return
 
 
