@@ -453,9 +453,36 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
         SLOTS.release(account_id)
         USERS.pop(account_id, None)
 
+    def check_timer(self, room_name):
+        # 1. Ignore the lobby or missing rooms
+        if room_name == "_" or not room_name:
+            return
+            
+        room = self.server.rooms.get(room_name)
+        if not room:
+            return
+            
+        # 2. Start timer on the first packet received in the room
+        if "round_start" not in room:
+            room["round_start"] = time.time()
+            print(f"[*] Round timer started for room: {room_name}")
+            
+        # 3. Check if 30 seconds have passed
+        elapsed = time.time() - room["round_start"]
+        if elapsed >= 30:
+            print(f"[*] 30 SECONDS REACHED in {room_name}! Sending End Game packet.")
+            # Send the End Game packet
+            self.relay_raw_to_room(room_name, "0rTime Limit Reached", include_self=True)
+            # Push the timer into the future so it doesn't spam
+            room["round_start"] = time.time() + 30
+
     def handle_packet(self, packet: str):
         if not packet:
             return
+        
+        user_info = USERS.get(self.account_id)
+        if user_info and "room" in user_info:
+            self.check_timer(user_info["room"])
 
         print(f"[>] Received packet: {repr(packet)}")
 
@@ -588,7 +615,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             if room.get("round_start") is None:
                 room["round_start"] = time.time()
 
-            length = room.get("round_length", 600)
+            length = room.get("round_length", 60)
             elapsed = int(time.time() - room["round_start"])
             remaining = max(0, length - elapsed)
 
@@ -770,7 +797,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             players = f"{len(room['players']):02d}"
 
             # Calculate time
-            length = room.get("round_length", 600)
+            length = room.get("round_length", 60)
             start = room.get("round_start") or time.time()
             elapsed = int(time.time() - start)
             remaining = max(0, length - elapsed)
@@ -800,7 +827,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 "header": header,  # FIX: Store the header so 04 can use it!
                 "players": {self.account_id},
                 "round_start": time.time(),
-                "round_length": 600,
+                "round_length": 60,
             }
             USERS[self.account_id]["room"] = room_name
 
@@ -1013,7 +1040,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             room_name = USERS[self.account_id].get("room")
             if room_name and room_name in self.server.rooms:
                 room = self.server.rooms[room_name]
-                length = room.get("round_length", 600)
+                length = room.get("round_length", 60)
                 start = room.get("round_start") or time.time()
                 elapsed = int(time.time() - start)
                 remaining = max(0, length - elapsed)
@@ -1094,7 +1121,7 @@ class ThreadedTCPServer(socketserver.ThreadingTCPServer):
 
 with ThreadedTCPServer(("0.0.0.0", 6123), FlashGameHandler) as server:
     server.rooms = {
-        "_": {"name": "_", "players": set(), "settings_string": "", "round_start": None, "round_length": 600}
+        "_": {"name": "_", "players": set(), "settings_string": "", "round_start": None, "round_length": 60}
     }
     print("[*] Listening on port 6123...")
     server.serve_forever()
