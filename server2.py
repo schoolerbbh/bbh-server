@@ -894,15 +894,15 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 dead_pos = USERS[target_acc].get("last_pos", "0000000000")
                 
                 # Create the 13-character bounty string
-                #bounty_str = create_bounty_string(1, 1, dead_pos)
-                bounty_str = "1010500005000"
+                bounty_str = create_bounty_string(2, 0, dead_pos)
+                #bounty_str = "1010500005000"
 
                 # 5. Construct the Kill Packet
                 # M + Target(3) + 7 + Killer(3) + Weapon(2) + Bounty(13)
                 # Payload length after 'M' must be exactly 22 chars
-                #kill_out = f"M{target_wire}7{attacker_wire}{weapon_wire}{bounty_str}"
+                kill_out = f"M{target_wire}7{attacker_wire}{weapon_wire}{bounty_str}"
                 #kill_out = "M001700200014300483020"
-                kill_out = f"M{target_wire}7{attacker_wire}{weapon_wire}100{dead_pos}"
+                #kill_out = f"M{target_wire}7{attacker_wire}{weapon_wire}000{dead_pos}"
                 
                 print(f"DEBUG: Kill out {kill_out} (Length: {len(kill_out)})")
                 self.broadcast_to_room((kill_out + "\x00").encode("utf-8"))
@@ -915,31 +915,29 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 print(f"[DEBUG] Broadcast DEATH: Packet={packet}")
             return
 
+        # --- 3. HANDLE CRATE PICKUP ---
+        # --- 3. HANDLE CRATE PICKUP ---
         elif packet.startswith("0m"):
-            # Packet format: '0m' + 2-digit index
-            crate_index = packet[2:4]
+            payload = packet[2:] # E.g., '00'
+            user_info = USERS.get(self.account_id)
+            if not user_info: return
             
-            # 1. Get the player's info
-            user_info = USERS[self.account_id]
-            room_name = user_info["room"]
-            slot_str = f"{user_info['slot']:03d}"
+            print(f"DEBUG: Player {user_info['username']} claimed crate {payload[:2]}")
             
-            print(f"DEBUG: Player {user_info['username']} claimed crate {crate_index}")
-            
-            # 2. Broadcast to the rest of the room so it disappears for them
-            # We wrap the packet in 'M' + PlayerID + '0mXX'
-            out_packet = f"M{slot_str}{packet}"
-            
-            # Loop through the room and send to everyone EXCEPT the player who claimed it
-            # (Since their client already claimed it locally via map.claimBountyItem)
-            if room_name in self.server.rooms:
-                for p_acc in self.server.rooms[room_name]["players"]:
-                    if p_acc != self.account_id:
-                        p_sock = USERS[p_acc]["socket"]
-                        try:
-                            p_sock.sendall(out_packet.encode("utf-8") + b"\x00")
-                        except Exception as e:
-                            pass
+            room_name = user_info.get("room")
+            if room_name:
+                slot_str = f"{int(user_info['slot']):03d}"
+                
+                # Format: '0m' + PlayerSlot(3) + CrateIndex(2) + BountyPoints(1)
+                # We append '0' at the end so AS3 parseInt() doesn't return NaN!
+                # Example: '0m' + '002' + '00' + '0' = '0m002000'
+                out_packet = f"0m{slot_str}{payload[:2]}0"
+                
+                print(f"DEBUG: Relaying crate claim to room: {out_packet}")
+                
+                # CRITICAL FIX: include_self MUST be True.
+                # The local client needs this server confirmation to award the cash!
+                self.relay_raw_to_room(room_name, out_packet, include_self=True)
 
         # 2-char 0* opcodes that should be forwarded intact (no framing injection)
         elif packet.startswith(("0k", "0q")):
