@@ -84,7 +84,7 @@ if os.path.exists(DB_FILE):
             parts = line.split(";")
             
             # Map parts to names safely
-            # Format: user;hash;id;level;gender;h_m;h_c;b_m;b_c;bounty;kills;deaths;wins;rounds;wanted
+            # Format: user;hash;id;level;gender;h_m;h_c;b_m;b_c;bounty;kills;deaths;wins;losses;wanted
             u_data = {
                 "password_hash": parts[1] if len(parts) > 1 else "",
                 "account_id": parts[2] if len(parts) > 2 else "0",
@@ -98,7 +98,7 @@ if os.path.exists(DB_FILE):
                 "kills": parts[10] if len(parts) > 10 else "0",
                 "deaths": parts[11] if len(parts) > 11 else "0",
                 "wins": parts[12] if len(parts) > 12 else "0",
-                "rounds": parts[13] if len(parts) > 13 else "0",
+                "losses": parts[13] if len(parts) > 13 else "0",
                 "wanted": parts[14] if len(parts) > 14 else "0",
             }
             
@@ -123,7 +123,7 @@ def save_user(username: str, password: str) -> str:
         "head_model": "00", "head_color": "00",
         "body_model": "00", "body_color": "00",
         "bounty": "0", "kills": "0", "deaths": "0",
-        "wins": "0", "rounds": "0", "wanted": "0"
+        "wins": "0", "losses": "0", "wanted": "0"
     }
 
     USER_DB[username] = new_user
@@ -136,7 +136,7 @@ def save_user(username: str, password: str) -> str:
                 f"{new_user['body_model']};{new_user['body_color']};"
                 f"{new_user['bounty']};{new_user['kills']};"
                 f"{new_user['deaths']};{new_user['wins']};"
-                f"{new_user['rounds']};{new_user['wanted']}\n")
+                f"{new_user['losses']};{new_user['wanted']}\n")
         f.write(line)
     return acc_id
 
@@ -151,7 +151,7 @@ def save_all_users():
                         f"{data['body_model']};{data['body_color']};"
                         f"{data['bounty']};{data['kills']};"
                         f"{data['deaths']};{data['wins']};"
-                        f"{data['rounds']};{data['wanted']}\n")
+                        f"{data['losses']};{data['wanted']}\n")
                 f.write(line)
     except Exception as e:
         print(f"Error saving DB: {e}")
@@ -174,7 +174,7 @@ def auth_packet(account_id: str) -> bytes:
     body_model = data["body_model"]
     body_color = data["body_color"]
     
-    stats5 = f"{data['bounty']};{data['kills']};{data['deaths']};{data['wins']};{data['rounds']}"
+    stats5 = f"{data['kills']};{data['deaths']};{data['wins']};{data['losses']};{data['bounty']}"
     wanted = data["wanted"]
 
     payload = f"{name20}{level}{gender}{head_model}{head_color}{body_model}{body_color}{stats5}{wanted}"
@@ -188,8 +188,8 @@ def lobby_user_packet(account_id: str) -> bytes:
     name20 = fmt_name_20(username)
     data = USER_DB[username]
     
-    # stats6: level;bounty;kills;deaths;wins;rounds
-    stats6 = f"{data['level']};{data['bounty']};{data['kills']};{data['deaths']};{data['wins']};{data['rounds']}"
+
+    stats6 = f"{data['kills']};{data['deaths']};{data['wins']};{data['losses']};{data['bounty']};{data['level']}"
     wanted = data["wanted"]
 
     payload = f"{name20}{stats6}{wanted}"
@@ -471,10 +471,76 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
         elapsed = time.time() - room["round_start"]
         if elapsed >= 30:
             print(f"[*] 30 SECONDS REACHED in {room_name}! Sending End Game packet.")
+            awards_payload = self.get_awards_and_save_db(room_name)
             # Send the End Game packet
-            self.relay_raw_to_room(room_name, "0rTime Limit Reached", include_self=True)
+            self.relay_raw_to_room(room_name, "0r{awards_payload}", include_self=True)
             # Push the timer into the future so it doesn't spam
             room["round_start"] = time.time() + 30
+
+    def get_awards_and_save_db(self, room_name):
+        room = self.server.rooms.get(room_name)
+        if not room: return "000" * 5
+        
+        # 1. Gather all players' stats in the room
+        players = []
+        for acc_id in room["players"]:
+            info = USERS.get(acc_id)
+            if info and "slot" in info:
+                p_data = info.setdefault("stats", {"score": 10000, "kills": 0, "deaths": 0, "bounty_points": 0}).copy()
+                p_data["slot"] = f"{int(info['slot']):03d}"
+                p_data["username"] = info["username"]
+                players.append(p_data)
+                
+        if not players:
+            return "001" * 5 
+            
+        # 2. Calculate Award Winners
+        winner = max(players, key=lambda x: x["score"])
+        winner_id = winner["slot"]
+        hunter_id = max(players, key=lambda x: x["bounty_points"])["slot"] if len(players) >= 6 else winner_id
+        prof_id = max(players, key=lambda x: x["kills"] if x["deaths"] == 0 else (x["kills"] / x["deaths"]))["slot"]
+        poacher_id = max(players, key=lambda x: 0 if x["kills"] == 0 else ((x["score"] - 10000) / x["kills"]))["slot"]
+        dummy_id = max(players, key=lambda x: x["deaths"])["slot"]
+        
+        # 3. UPDATE USER_DB DICTIONARY
+        for p in players:
+            uname = p["username"]
+            if uname in USER_DB:
+                db_user = USER_DB[uname]
+                
+                # Math applied cleanly
+                db_user["kills"] = str(int(db_user.get("kills", "0")) + p["kills"])
+                db_user["deaths"] = str(int(db_user.get("deaths", "0")) + p["deaths"])
+                db_user["bounty"] = str(int(db_user.get("bounty", "0")) + p["bounty_points"])
+                
+                if p["username"] == winner["username"]:
+                    db_user["wins"] = str(int(db_user.get("wins", "0")) + 1)
+                else:
+                    db_user["losses"] = str(int(db_user.get("losses", "0")) + 1)
+                
+
+        # 4. OVERWRITE USERS.DB EXACTLY MATCHING YOUR FORMAT
+        try:
+            with open(DB_FILE, "w", encoding="utf-8") as f:
+                for uname, data in USER_DB.items():
+                    # Format: user;hash;id;level;gender;h_m;h_c;b_m;b_c;bounty;kills;deaths;wins;losses;wanted
+                    line = (f"{uname};{data.get('password_hash', '')};{data.get('account_id', '0')};"
+                            f"{data.get('level', '0')};{data.get('gender', '0')};"
+                            f"{data.get('head_model', '00')};{data.get('head_color', '00')};"
+                            f"{data.get('body_model', '00')};{data.get('body_color', '00')};"
+                            f"{data.get('bounty', '0')};{data.get('kills', '0')};"
+                            f"{data.get('deaths', '0')};{data.get('wins', '0')};"
+                            f"{data.get('losses', '0')};{data.get('wanted', '0')}\n")
+                    f.write(line)
+        except Exception as e:
+            print(f"Error saving DB: {e}")
+        
+        # 5. Reset round stats
+        for acc_id in room["players"]:
+            if acc_id in USERS:
+                USERS[acc_id]["stats"] = {"score": 10000, "kills": 0, "deaths": 0, "bounty_points": 0}
+        
+        return f"{winner_id}{hunter_id}{prof_id}{poacher_id}{dummy_id}"
 
     def handle_packet(self, packet: str):
         if not packet:
@@ -536,6 +602,9 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 "slot": SLOTS.allocate(acc_id),
                 "hp": 100,
                 "score": 1000, # Starting score or load from DB
+                "kills": 0,
+                "deaths": 0,
+                "bounty_points": 0
             }
 
             self.send(auth_packet(acc_id))
@@ -916,23 +985,44 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 # Normal damage update
                 self.broadcast_to_room(f"M{target_wire}6{new_hp:03d}\x00".encode("utf-8"))
             else:
-                # 4. Handle Death and Spawn Crate
-                # Get the 10-character position string
-                dead_pos = USERS[target_acc].get("last_pos", "0000000000")
+                # --- 1. KILL & DEATH TRACKING ---
+                target_info = USERS.get(target_acc)
+                target_info.setdefault("stats", {"score": 10000, "kills": 0, "deaths": 0, "bounty_points": 0})
+                target_info["stats"]["deaths"] += 1
                 
-                # Create the 13-character bounty string
-                bounty_str = create_bounty_string(2, 0, dead_pos)
-                #bounty_str = "1010500005000"
+                room_name = target_info.get("room")
+                
+                # Find the attacker by their slot ID to give them the kill
+                attacker_acc = None
+                for a_id, a_info in USERS.items():
+                    if a_info.get("room") == room_name and str(a_info.get("slot", "")) == str(int(raw_attacker)):
+                        attacker_acc = a_id
+                        break
+                        
+                if attacker_acc:
+                    a_info = USERS[attacker_acc]
+                    a_info.setdefault("stats", {"score": 10000, "kills": 0, "deaths": 0, "bounty_points": 0})
+                    a_info["stats"]["kills"] += 1
 
-                # 5. Construct the Kill Packet
-                # M + Target(3) + 7 + Killer(3) + Weapon(2) + Bounty(13)
-                # Payload length after 'M' must be exactly 22 chars
-                kill_out = f"M{target_wire}7{attacker_wire}{weapon_wire}{bounty_str}"
-                #kill_out = "M001700200014300483020"
-                #kill_out = f"M{target_wire}7{attacker_wire}{weapon_wire}000{dead_pos}"
+                # --- 2. KILL BROADCAST & CRATE SPAWN ---
+                attacker_wire = f"{int(raw_attacker):03d}"
+                weapon_wire = f"{int(raw_weapon):02d}"
+                dead_pos = target_info.get("last_pos", "0050000500")
                 
-                print(f"DEBUG: Kill out {kill_out} (Length: {len(kill_out)})")
+                crate_type = 0 # Change to 1 (Red) or 2 (Gold) as desired
+                crate_index = 1 # Ideally increments, using 1 for testing
+                
+                # Save the crate type to the room so the 0m handler knows what it's worth!
+                if room_name and room_name in self.server.rooms:
+                    room = self.server.rooms[room_name]
+                    room.setdefault("crates", {})[f"{crate_index:02d}"] = crate_type
+                
+                bounty_str = create_bounty_string(crate_type, crate_index, dead_pos) 
+                
+                kill_out = f"M{target_wire}7{attacker_wire}{weapon_wire}{bounty_str}"
                 self.broadcast_to_room((kill_out + "\x00").encode("utf-8"))
+                
+                # ... (Keep your existing RESPAWN LOGIC Opcodes 6 and 8 below this) ...
 
         # --- PLAYER DEATH / DESPAWN ---
         elif packet.startswith("7"):
@@ -942,28 +1032,33 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 print(f"[DEBUG] Broadcast DEATH: Packet={packet}")
             return
 
-        # --- 3. HANDLE CRATE PICKUP ---
-        # --- 3. HANDLE CRATE PICKUP ---
+        # --- 3. HANDLE CRATE PICKUP & SCORE ---
         elif packet.startswith("0m"):
-            payload = packet[2:] # E.g., '00'
+            payload = packet[2:] # e.g., '00' or '01'
+            crate_index = payload[:2]
+            
             user_info = USERS.get(self.account_id)
             if not user_info: return
             
-            print(f"DEBUG: Player {user_info['username']} claimed crate {payload[:2]}")
-            
             room_name = user_info.get("room")
-            if room_name:
+            if room_name and room_name in self.server.rooms:
+                room = self.server.rooms[room_name]
+                
+                # 1. Determine crate value
+                crate_type = room.get("crates", {}).get(crate_index, 0)
+                points = {0: 250, 1: 500, 2: 1000}.get(crate_type, 250)
+                
+                # 2. Add Stats
+                user_info.setdefault("stats", {"score": 10000, "kills": 0, "deaths": 0, "bounty_points": 0})
+                user_info["stats"]["score"] += points
+                
+                # Bounty Points are only given if 6 or more players are present
+                bounty_awarded = points if len(room["players"]) >= 6 else 0
+                user_info["stats"]["bounty_points"] += bounty_awarded #incorrect; rn this adds score to BP
+                
+                # 3. Broadcast removal to clients (param3 = bounty points)
                 slot_str = f"{int(user_info['slot']):03d}"
-                
-                # Format: '0m' + PlayerSlot(3) + CrateIndex(2) + BountyPoints(1)
-                # We append '0' at the end so AS3 parseInt() doesn't return NaN!
-                # Example: '0m' + '002' + '00' + '0' = '0m002000'
-                out_packet = f"0m{slot_str}{payload[:2]}0"
-                
-                print(f"DEBUG: Relaying crate claim to room: {out_packet}")
-                
-                # CRITICAL FIX: include_self MUST be True.
-                # The local client needs this server confirmation to award the cash!
+                out_packet = f"0m{slot_str}{crate_index}{bounty_awarded}"
                 self.relay_raw_to_room(room_name, out_packet, include_self=True)
 
         # 2-char 0* opcodes that should be forwarded intact (no framing injection)
