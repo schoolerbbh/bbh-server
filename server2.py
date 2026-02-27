@@ -1116,20 +1116,34 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     out_packet = f"0m{slot_str}{crate_index}{bounty_awarded}"
                     self.relay_raw_to_room(room_name, out_packet, include_self=True)
 
-        # 2-char 0* opcodes that should be forwarded intact (no framing injection)
-        elif packet.startswith(("0k", "0q")):
+
+        # --- RESET HP ON RESPAWN (0k) ---
+        elif packet.startswith("0k"):
             room_name = USERS[self.account_id].get("room")
-            
-            # --- RESET HP ON RESPAWN ---
             if packet == "0k1":
                 if self.account_id in USERS:
                     USERS[self.account_id]["hp"] = 100
                     print(f"[SYSTEM] Reset HP for {self.username} (Respawn)")
-            
+
             if room_name:
-                # include_self=True ensures your client gets the 'respawn' confirmation
-                self.relay_raw_to_room(room_name, packet, include_self=True)
-            return
+                self.relay_raw_to_room(room_name, packet, include_self=False)
+
+        # --- WEAPON SWITCH (0q) ---
+        elif packet.startswith("0q"):
+            user_info = USERS.get(self.account_id)
+            if not user_info: return
+            
+            room_name = user_info.get("room")
+            if room_name and room_name in self.server.rooms:
+                # Get the 3-digit slot ID (e.g., '001')
+                slot_str = f"{int(user_info['slot']):03d}"
+                
+                # Wrap the entire packet in an 'M' (Player Message) packet
+                # If the packet is '0q15', this creates 'M0010q15'
+                out_packet = f"M{slot_str}{packet}"
+                
+                # Relay to others so their local player instance processes the switch!
+                self.relay_raw_to_room(room_name, out_packet, include_self=False)
 
 
 
