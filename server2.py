@@ -13,6 +13,22 @@ USERS = {}  # account_id -> dict(socket, username, slot, room)
 # Helpers
 ###############################################################################
 
+def create_bounty_string(crate_type, index, pos):
+    """
+    Creates a 13-character string for a single bounty item.
+    [Type: 1char][Index: 2char][Pos: 10char]
+    
+    :param pos: A 10-character string (e.g., '0045001200')
+    """
+    # Type: 1 character (e.g., '1' for health)
+    type_part = str(crate_type)[0]
+    
+    # Index: 2 characters (e.g., '01')
+    index_part = f"{index:02d}"
+    
+    # Pos: Use the 10-character string directly
+    return f"{type_part}{index_part}{pos}"
+
 def md5_hash(s: str) -> str:
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
@@ -839,45 +855,57 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
         # === 1. Damage / Kill Logic (Opcode 6) ===
         elif packet.startswith("6"):
             if len(packet) < 8: return
-            attacker_wire = packet[1:4]
-            weapon_id = packet[4:6]
-            try: damage = int(packet[6:8])
-            except: return
+            
+            # 1. Parse Attacker, Weapon, and Damage from incoming packet (e.g., '60010007')
+            raw_attacker = packet[1:4]  # Extracts '001'
+            raw_weapon = packet[4:6]    # Extracts '00'
+            try:
+                damage = int(packet[6:8])
+            except:
+                return
 
             target_acc = self.account_id
-            if not target_acc or target_acc not in USERS: return
+            if not target_acc or target_acc not in USERS:
+                return
 
-            # GUARD: Stop if already dead.
+            # GUARD: Stop if already dead to prevent infinite loop
             current_hp = USERS[target_acc].get("hp", 100)
-            if current_hp <= 0: return
+            if current_hp <= 0:
+                return
 
             new_hp = max(0, current_hp - damage)
             USERS[target_acc]["hp"] = new_hp
-            target_wire = f"{USERS[target_acc].get('slot', 0):03d}"
+            
+            # 2. Correctly retrieve the slot for the target
+            # Use USERS[target_acc]['slot'] instead of self.slot
+            target_slot_val = USERS[target_acc].get("slot", 0)
+            
+            # 3. Format IDs to exact widths (3 for Target/Killer, 2 for Weapon)
+            target_wire = f"{int(target_slot_val):03d}"
+            attacker_wire = f"{int(raw_attacker):03d}"
+            weapon_wire = f"{int(raw_weapon):02d}"
 
-            # Broadcast HP Update
-            self.broadcast_to_room(f"M{target_wire}6{new_hp:03d}\x00".encode("utf-8"))
-
-            if new_hp == 0:
-                # --- BOUNTY CALCULATION ---
-                victim_score = USERS[target_acc].get("score", 0)
-                drop_amount = int(victim_score * 0.10)
-                USERS[target_acc]["score"] -= drop_amount # Deduct from victim
+            if new_hp > 0:
+                # Normal damage update
+                self.broadcast_to_room(f"M{target_wire}6{new_hp:03d}\x00".encode("utf-8"))
+            else:
+                # 4. Handle Death and Spawn Crate
+                # Get the 10-character position string
+                dead_pos = USERS[target_acc].get("last_pos", "0000000000")
                 
-                pos = USERS[target_acc].get("last_pos", "0050000500")
-                bounty_str = ""
-                rem = drop_amount
-                # Greedy selection: Yellows -> Reds -> Greys
-                for value, tid in [(1000, "23"), (500, "22"), (250, "21")]:
-                    count = rem // value
-                    for _ in range(count):
-                        bounty_str += f"{tid}{pos}"
-                    rem %= value
+                # Create the 13-character bounty string
+                #bounty_str = create_bounty_string(1, 1, dead_pos)
+                bounty_str = "1010500005000"
 
-                # --- KILL BROADCAST ---
-                # Format: M + Target + 7 + Killer + Weapon + BountyItems
-                kill_out = f"M{target_wire}7{attacker_wire}{weapon_id}{bounty_str}\x00"
-                self.broadcast_to_room(kill_out.encode("utf-8"))
+                # 5. Construct the Kill Packet
+                # M + Target(3) + 7 + Killer(3) + Weapon(2) + Bounty(13)
+                # Payload length after 'M' must be exactly 22 chars
+                #kill_out = f"M{target_wire}7{attacker_wire}{weapon_wire}{bounty_str}"
+                #kill_out = "M001700200014300483020"
+                kill_out = f"M{target_wire}7{attacker_wire}{weapon_wire}100{dead_pos}"
+                
+                print(f"DEBUG: Kill out {kill_out} (Length: {len(kill_out)})")
+                self.broadcast_to_room((kill_out + "\x00").encode("utf-8"))
 
         # --- PLAYER DEATH / DESPAWN ---
         elif packet.startswith("7"):
@@ -887,7 +915,31 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 print(f"[DEBUG] Broadcast DEATH: Packet={packet}")
             return
 
-
+        elif packet.startswith("0m"):
+            # Packet format: '0m' + 2-digit index
+            crate_index = packet[2:4]
+            
+            # 1. Get the player's info
+            user_info = USERS[self.account_id]
+            room_name = user_info["room"]
+            slot_str = f"{user_info['slot']:03d}"
+            
+            print(f"DEBUG: Player {user_info['username']} claimed crate {crate_index}")
+            
+            # 2. Broadcast to the rest of the room so it disappears for them
+            # We wrap the packet in 'M' + PlayerID + '0mXX'
+            out_packet = f"M{slot_str}{packet}"
+            
+            # Loop through the room and send to everyone EXCEPT the player who claimed it
+            # (Since their client already claimed it locally via map.claimBountyItem)
+            if room_name in self.server.rooms:
+                for p_acc in self.server.rooms[room_name]["players"]:
+                    if p_acc != self.account_id:
+                        p_sock = USERS[p_acc]["socket"]
+                        try:
+                            p_sock.sendall(out_packet.encode("utf-8") + b"\x00")
+                        except Exception as e:
+                            pass
 
         # 2-char 0* opcodes that should be forwarded intact (no framing injection)
         elif packet.startswith(("0k", "0q")):
