@@ -2,6 +2,8 @@ import socketserver
 import os
 import hashlib
 import time
+import math
+import random
 
 DB_FILE = "users.db"
 
@@ -221,8 +223,8 @@ def game_user_packet(account_id: str) -> bytes:
 
     # 2. DELIMITED STATS (Exactly 4 semicolons required!)
     score = "10000"
-    kills = str(data.get("kills", "0"))
-    deaths = str(data.get("deaths", "0"))
+    kills = "0" #str(data.get("kills", "0"))
+    deaths = "0" #str(data.get("deaths", "0"))
     bounty = "0"
     stats_string = f"{score};{kills};{deaths};{bounty};"
     
@@ -469,8 +471,8 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             
         # 3. Check if 30 seconds have passed
         elapsed = time.time() - room["round_start"]
-        if elapsed >= 30:
-            print(f"[*] 30 SECONDS REACHED in {room_name}! Sending End Game packet.")
+        if elapsed >= 60:
+            print(f"[*] 60 SECONDS REACHED in {room_name}! Sending End Game packet.")
             awards_payload = self.get_awards_and_save_db(room_name)
             # Send the End Game packet
             end_game_packet = f"0r{awards_payload}\x00"
@@ -685,7 +687,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             if room.get("round_start") is None:
                 room["round_start"] = time.time()
 
-            length = room.get("round_length", 60)
+            length = room.get("round_length", 90)
             elapsed = int(time.time() - room["round_start"])
             remaining = max(0, length - elapsed)
 
@@ -867,7 +869,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             players = f"{len(room['players']):02d}"
 
             # Calculate time
-            length = room.get("round_length", 60)
+            length = room.get("round_length", 90)
             start = room.get("round_start") or time.time()
             elapsed = int(time.time() - start)
             remaining = max(0, length - elapsed)
@@ -897,7 +899,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 "header": header,  # FIX: Store the header so 04 can use it!
                 "players": {self.account_id},
                 "round_start": time.time(),
-                "round_length": 60,
+                "round_length": 90,
             }
             USERS[self.account_id]["room"] = room_name
 
@@ -1010,15 +1012,66 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 weapon_wire = f"{int(raw_weapon):02d}"
                 dead_pos = target_info.get("last_pos", "0050000500")
                 
-                crate_type = 0 # Change to 1 (Red) or 2 (Gold) as desired
-                crate_index = 1 # Ideally increments, using 1 for testing
+                # Calculate 10% of score, rounded up to the nearest 250
+                target_score = target_info.get("stats", {}).get("score", 10000)
+                bounty_value = target_score * 0.10
+                bounty_value = math.ceil(bounty_value / 250.0) * 250
                 
-                # Save the crate type to the room so the 0m handler knows what it's worth!
+                # Figure out which crates to spawn (Greedy algorithm)
+                crates_to_spawn = []
+                while bounty_value >= 1000:
+                    crates_to_spawn.append(2)
+                    bounty_value -= 1000
+                while bounty_value >= 500:
+                    crates_to_spawn.append(1)
+                    bounty_value -= 500
+                while bounty_value >= 250:
+                    crates_to_spawn.append(0)
+                    bounty_value -= 250
+
+                # Generate 9 distinct tile offsets (Center + 8 adjacent)
+                TILE_SIZE = 100 # If the crates barely separate visually, change this to 500
+                grid_offsets = [(dx * TILE_SIZE, dy * TILE_SIZE) for dx in [-1, 0, 1] for dy in [-1, 0, 1]]
+                random.shuffle(grid_offsets)
+
+                bounty_str = ""
                 if room_name and room_name in self.server.rooms:
                     room = self.server.rooms[room_name]
-                    room.setdefault("crates", {})[f"{crate_index:02d}"] = crate_type
-                
-                bounty_str = create_bounty_string(crate_type, crate_index, dead_pos) 
+                    room.setdefault("crates", {})
+                    
+                    # Safely extract X and Y from the 10-character position string
+                    try:
+                        base_x = int(dead_pos[0:5])
+                        base_y = int(dead_pos[5:10])
+                    except ValueError:
+                        base_x, base_y = 500, 500
+                    
+                    # Assign an available index and offset for each crate
+                    for i, c_type in enumerate(crates_to_spawn):
+                        crate_index = -1
+                        # Find the first free index between 00 and 99
+                        for j in range(100):
+                            idx_str = f"{j:02d}"
+                            if idx_str not in room["crates"]:
+                                crate_index = j
+                                break
+                        
+                        if crate_index != -1:
+                            idx_str = f"{crate_index:02d}"
+                            room["crates"][idx_str] = c_type  # Claim the index in the DB
+                            
+                            # Pick a distinct tile if possible, otherwise stack randomly
+                            if i < len(grid_offsets):
+                                dx, dy = grid_offsets[i]
+                            else:
+                                dx, dy = random.choice(grid_offsets)
+                                
+                            # Apply the offset and clamp values between 0 and 99999
+                            new_x = max(0, min(99999, base_x + dx))
+                            new_y = max(0, min(99999, base_y + dy))
+                            spread_pos = f"{new_x:05d}{new_y:05d}" # Must be exactly 10 chars
+                            
+                            bounty_str += create_bounty_string(c_type, crate_index, spread_pos)
                 
                 kill_out = f"M{target_wire}7{attacker_wire}{weapon_wire}{bounty_str}"
                 self.broadcast_to_room((kill_out + "\x00").encode("utf-8"))
@@ -1045,22 +1098,23 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             if room_name and room_name in self.server.rooms:
                 room = self.server.rooms[room_name]
                 
-                # 1. Determine crate value
-                crate_type = room.get("crates", {}).get(crate_index, 0)
-                points = {0: 250, 1: 500, 2: 1000}.get(crate_type, 250)
-                
-                # 2. Add Stats
-                user_info.setdefault("stats", {"score": 10000, "kills": 0, "deaths": 0, "bounty_points": 0})
-                user_info["stats"]["score"] += points
-                
-                # Bounty Points are only given if 6 or more players are present
-                bounty_awarded = points if len(room["players"]) >= 6 else 0
-                user_info["stats"]["bounty_points"] += bounty_awarded #incorrect; rn this adds score to BP
-                
-                # 3. Broadcast removal to clients (param3 = bounty points)
-                slot_str = f"{int(user_info['slot']):03d}"
-                out_packet = f"0m{slot_str}{crate_index}{bounty_awarded}"
-                self.relay_raw_to_room(room_name, out_packet, include_self=True)
+                # 1. Check if the crate actually exists, and FREE the index using .pop()
+                if "crates" in room and crate_index in room["crates"]:
+                    crate_type = room["crates"].pop(crate_index)
+                    points = {0: 250, 1: 500, 2: 1000}.get(crate_type, 250)
+                    
+                    # 2. Add Stats
+                    user_info.setdefault("stats", {"score": 10000, "kills": 0, "deaths": 0, "bounty_points": 0})
+                    user_info["stats"]["score"] += points
+                    
+                    # Bounty Points are only given if 6 or more players are present
+                    bounty_awarded = points if len(room["players"]) >= 6 else 0
+                    user_info["stats"]["bounty_points"] += bounty_awarded
+                    
+                    # 3. Broadcast removal to clients (param3 = bounty points)
+                    slot_str = f"{int(user_info['slot']):03d}"
+                    out_packet = f"0m{slot_str}{crate_index}{bounty_awarded}"
+                    self.relay_raw_to_room(room_name, out_packet, include_self=True)
 
         # 2-char 0* opcodes that should be forwarded intact (no framing injection)
         elif packet.startswith(("0k", "0q")):
@@ -1136,7 +1190,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             room_name = USERS[self.account_id].get("room")
             if room_name and room_name in self.server.rooms:
                 room = self.server.rooms[room_name]
-                length = room.get("round_length", 60)
+                length = room.get("round_length",90)
                 start = room.get("round_start") or time.time()
                 elapsed = int(time.time() - start)
                 remaining = max(0, length - elapsed)
@@ -1217,7 +1271,7 @@ class ThreadedTCPServer(socketserver.ThreadingTCPServer):
 
 with ThreadedTCPServer(("0.0.0.0", 6123), FlashGameHandler) as server:
     server.rooms = {
-        "_": {"name": "_", "players": set(), "settings_string": "", "round_start": None, "round_length": 60}
+        "_": {"name": "_", "players": set(), "settings_string": "", "round_start": None, "round_length": 90}
     }
     print("[*] Listening on port 6123...")
     server.serve_forever()
