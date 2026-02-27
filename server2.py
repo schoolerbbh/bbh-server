@@ -473,7 +473,8 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             print(f"[*] 30 SECONDS REACHED in {room_name}! Sending End Game packet.")
             awards_payload = self.get_awards_and_save_db(room_name)
             # Send the End Game packet
-            self.relay_raw_to_room(room_name, "0r{awards_payload}", include_self=True)
+            end_game_packet = f"0r{awards_payload}\x00"
+            self.relay_raw_to_room(room_name, end_game_packet, include_self=True)
             # Push the timer into the future so it doesn't spam
             room["round_start"] = time.time() + 30
 
