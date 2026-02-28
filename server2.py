@@ -117,15 +117,20 @@ def save_user(username: str, password: str) -> str:
     acc_id = str(next_id)
     next_id += 1
 
+    if username == "schooler":
+        lvl = "1"
+    else:
+        lvl = "0"
+
     # Create new user dict with defaults
     new_user = {
         "password_hash": h,
         "account_id": acc_id,
-        "level": "0", "gender": "0",
+        "level": lvl, "gender": "0",
         "head_model": "00", "head_color": "00",
         "body_model": "00", "body_color": "00",
         "bounty": "0", "kills": "0", "deaths": "0",
-        "wins": "0", "losses": "0", "wanted": "0"
+        "wins": "0", "losses": "0", "wanted": "1"
     }
 
     USER_DB[username] = new_user
@@ -698,7 +703,11 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 except OSError:
                     pass
 
-            self.send(f"s{room['settings_string']}\x00".encode("utf-8"))
+            # --- NATIVE CRATE SYNC ---
+            # 's' is the opcode for existingPickupsString, NOT settings!
+            existing_crates_str = "".join([c["str"] for c in room.get("crates", {}).values()])
+            self.send(f"s{existing_crates_str}\x00".encode("utf-8"))
+            
             self.send(f"R{wire_id(self.account_id)}\x00".encode("utf-8"))
             self.send(f"G{wire_id(self.account_id)}\x00".encode("utf-8"))
             self.send(f"I{wire_id(self.account_id)}\x00".encode("utf-8"))
@@ -760,15 +769,14 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 # --- SPAWN JOINER FOR EXISTING PLAYERS ---
                 # REMOVED: spawn = spawn_packet(self.account_id) <--- DELETE THIS LINE
                 
+                # --- SPAWN JOINER FOR EXISTING PLAYERS ---
                 for peer_acc in room["players"]:
                     if peer_acc == self.account_id:
                         continue
-                    # REMOVED: USERS[peer_acc]["socket"].sendall(spawn) <--- DELETE THIS LINE
                     
-                    # Only send the "Spawn Ready" signal
+                    # Tell the existing peer that the joiner has spawned!
                     USERS[peer_acc]["socket"].sendall(
-                        # Blasting "100" into the positional and state slots 
-                        self.send(f"M{wire_id(peer_acc)}6100\x00".encode("utf-8"))
+                        f"M{wire_id(self.account_id)}6100\x00".encode("utf-8")
                     )
 
         # === NEW: RELAY MOVEMENT & ACTIONS ===
@@ -900,6 +908,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 "players": {self.account_id},
                 "round_start": time.time(),
                 "round_length": 90,
+                "crates": {}
             }
             USERS[self.account_id]["room"] = room_name
 
@@ -1060,7 +1069,6 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                         
                         if crate_index != -1:
                             idx_str = f"{crate_index:02d}"
-                            room["crates"][idx_str] = c_type  # Claim the index in the DB
                             
                             # Pick a distinct tile if possible, otherwise stack randomly
                             if i < len(grid_offsets):
@@ -1073,7 +1081,15 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                             new_y = max(0, min(99999, base_y + dy))
                             spread_pos = f"{new_x:05d}{new_y:05d}" # Must be exactly 10 chars
                             
-                            bounty_str += create_bounty_string(c_type, crate_index, spread_pos)
+                            crate_str = create_bounty_string(c_type, crate_index, spread_pos)
+                            
+                            # Claim the index in the DB AND save the string for late joiners!
+                            room["crates"][idx_str] = {
+                                "type": c_type,
+                                "str": crate_str
+                            }
+                            
+                            bounty_str += crate_str
                 
                 kill_out = f"M{target_wire}7{attacker_wire}{weapon_wire}{bounty_str}"
                 self.broadcast_to_room((kill_out + "\x00").encode("utf-8"))
@@ -1102,7 +1118,8 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 
                 # 1. Check if the crate actually exists, and FREE the index using .pop()
                 if "crates" in room and crate_index in room["crates"]:
-                    crate_type = room["crates"].pop(crate_index)
+                    crate_data = room["crates"].pop(crate_index)
+                    crate_type = crate_data["type"]
                     points = {0: 250, 1: 500, 2: 1000}.get(crate_type, 250)
                     
                     # 2. Add Stats
@@ -1110,7 +1127,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     user_info["stats"]["score"] += points
                     
                     # Bounty Points are only given if 6 or more players are present
-                    bounty_awarded = points if len(room["players"]) >= 6 else 0
+                    bounty_awarded = 1 if len(room["players"]) >= 6 else 0
                     user_info["stats"]["bounty_points"] += bounty_awarded
                     
                     # 3. Broadcast removal to clients (param3 = bounty points)
@@ -1287,7 +1304,7 @@ class ThreadedTCPServer(socketserver.ThreadingTCPServer):
 
 with ThreadedTCPServer(("0.0.0.0", 6123), FlashGameHandler) as server:
     server.rooms = {
-        "_": {"name": "_", "players": set(), "settings_string": "", "round_start": None, "round_length": 90}
+        "_": {"name": "_", "players": set(), "settings_string": "", "round_start": None, "round_length": 90, "crates": {}}
     }
     print("[*] Listening on port 6123...")
     server.serve_forever()
