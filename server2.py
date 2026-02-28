@@ -267,8 +267,15 @@ def build_room_list_bytes(server) -> bytes:
     for room_name, room in server.rooms.items():
         if room_name == "_":
             continue
+            
         count = len(room["players"])
+        
+        # --- NEW: Hide the room if it has 16 or more players! ---
+        if count >= 16:
+            continue 
+            
         out += f"{count:02d}{room_name};"
+        
     out += "\x00"
     return out.encode("utf-8")
 
@@ -478,8 +485,8 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             
         # 3. Check if 30 seconds have passed
         elapsed = time.time() - room["round_start"]
-        if elapsed >= 60:
-            print(f"[*] 60 SECONDS REACHED in {room_name}! Sending End Game packet.")
+        if elapsed >= 600:
+            print(f"[*] 10 MINUTES REACHED in {room_name}! Sending End Game packet.")
             awards_payload = self.get_awards_and_save_db(room_name)
             # Send the End Game packet
             end_game_packet = f"0r{awards_payload}\x00"
@@ -630,6 +637,12 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
         elif packet.startswith("03"):
             room_name = normalize_room_name(packet[2:])
 
+            # --- NEW: ENFORCE 16 PLAYER CAP ---
+            if room_name != "_" and room_name in self.server.rooms:
+                if len(self.server.rooms[room_name]["players"]) >= 16:
+                    print(f"[!] Room '{room_name}' is full! Bouncing {self.username} back to lobby.")
+                    room_name = "_" # Rewrite their destination to the lobby
+
             old_room = USERS[self.account_id].get("room")
             if old_room:
                 # notify peers in old room BEFORE switching
@@ -694,7 +707,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             if room.get("round_start") is None:
                 room["round_start"] = time.time()
 
-            length = room.get("round_length", 90)
+            length = room.get("round_length", 630)
             elapsed = int(time.time() - room["round_start"])
             remaining = max(0, length - elapsed)
 
@@ -886,7 +899,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             players = f"{len(room['players']):02d}"
 
             # Calculate time
-            length = room.get("round_length", 90)
+            length = room.get("round_length", 630)
             start = room.get("round_start") or time.time()
             elapsed = int(time.time() - start)
             remaining = max(0, length - elapsed)
@@ -916,7 +929,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 "header": header,  # FIX: Store the header so 04 can use it!
                 "players": {self.account_id},
                 "round_start": time.time(),
-                "round_length": 90,
+                "round_length": 630,
                 "crates": {}
             }
             USERS[self.account_id]["room"] = room_name
@@ -1054,10 +1067,41 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 grid_offsets = [(dx * TILE_SIZE, dy * TILE_SIZE) for dx in [-1, 0, 1] for dy in [-1, 0, 1]]
                 random.shuffle(grid_offsets)
 
+                # --- NEW: CALCULATE BOUNTY POINTS (BP) BASED ON RANK ---
+                death_bp = 0
+                death_id = f"{target_acc}_{int(time.time() * 1000)}" # Unique ID for this specific death event
+                
                 bounty_str = ""
                 if room_name and room_name in self.server.rooms:
                     room = self.server.rooms[room_name]
                     room.setdefault("crates", {})
+                    
+                    # 1. Determine the victim's rank to calculate BP worth
+                    players_in_room = list(room["players"])
+                    num_players = len(players_in_room)
+                    
+                    # Sort by score descending to find rank
+                    players_in_room.sort(key=lambda acc: USERS.get(acc, {}).get("stats", {}).get("score", 10000), reverse=True)
+                    try:
+                        victim_rank = players_in_room.index(target_acc) + 1 # 1st = 1, 2nd = 2, etc.
+                    except ValueError:
+                        victim_rank = num_players # Fallback
+
+                    # 2. Assign BP based on room size and victim's rank
+                    if num_players >= 16:
+                        if victim_rank == 1: death_bp = 4
+                        elif victim_rank == 2: death_bp = 3
+                        elif victim_rank == 3: death_bp = 2
+                        else: death_bp = 1
+                    elif 9 <= num_players <= 15:
+                        if victim_rank == 1: death_bp = 3
+                        elif victim_rank == 2: death_bp = 2
+                        elif victim_rank == 3: death_bp = 1
+                        else: death_bp = 0
+                    elif 6 <= num_players <= 8:
+                        if victim_rank == 1: death_bp = 2
+                        elif victim_rank == 2: death_bp = 1
+                        else: death_bp = 0
                     
                     # Safely extract X and Y from the 10-character position string
                     try:
@@ -1092,10 +1136,12 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                             
                             crate_str = create_bounty_string(c_type, crate_index, spread_pos)
                             
-                            # Claim the index in the DB AND save the string for late joiners!
+                            # Claim the index in the DB AND save the BP/Death ID for late joiners!
                             room["crates"][idx_str] = {
                                 "type": c_type,
-                                "str": crate_str
+                                "str": crate_str,
+                                "bp": death_bp,           # <-- Save the calculated BP here
+                                "death_id": death_id      # <-- Stamp it with the specific death
                             }
                             
                             bounty_str += crate_str
@@ -1114,6 +1160,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             return
 
         # --- 3. HANDLE CRATE PICKUP & SCORE ---
+        # --- 3. HANDLE CRATE PICKUP & SCORE ---
         elif packet.startswith("0m"):
             payload = packet[2:] # e.g., '00' or '01'
             crate_index = payload[:2]
@@ -1129,21 +1176,33 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 if "crates" in room and crate_index in room["crates"]:
                     crate_data = room["crates"].pop(crate_index)
                     crate_type = crate_data["type"]
+                    
+                    # Extract BP and Death ID from the popped crate
+                    crate_bp = crate_data.get("bp", 0)
+                    death_id = crate_data.get("death_id")
+                    
                     points = {0: 250, 1: 500, 2: 1000}.get(crate_type, 250)
                     
                     # 2. Add Stats
                     user_info.setdefault("stats", {"score": 10000, "kills": 0, "deaths": 0, "bounty_points": 0})
                     user_info["stats"]["score"] += points
                     
-                    # Bounty Points are only given if 6 or more players are present
-                    bounty_awarded = 1 if len(room["players"]) >= 6 else 0
-                    user_info["stats"]["bounty_points"] += bounty_awarded
+                    # 3. Handle Bounty Points (Only 1 time per specific death event per user)
+                    bounty_awarded = 0
+                    if death_id and crate_bp > 0:
+                        claimed_deaths = user_info.setdefault("claimed_deaths", set())
+                        if death_id not in claimed_deaths:
+                            # User hasn't claimed BP for this death yet!
+                            bounty_awarded = crate_bp
+                            user_info["stats"]["bounty_points"] += bounty_awarded
+                            
+                            # Remember this death so they don't get BP for the other crates in the pile
+                            claimed_deaths.add(death_id) 
                     
-                    # 3. Broadcast removal to clients (param3 = bounty points)
+                    # 4. Broadcast removal to clients (param3 = bounty points)
                     slot_str = f"{int(user_info['slot']):03d}"
                     out_packet = f"0m{slot_str}{crate_index}{bounty_awarded}"
                     self.relay_raw_to_room(room_name, out_packet, include_self=True)
-
 
         # --- RESET HP ON RESPAWN (0k) ---
         elif packet.startswith("0k"):
@@ -1229,7 +1288,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             room_name = USERS[self.account_id].get("room")
             if room_name and room_name in self.server.rooms:
                 room = self.server.rooms[room_name]
-                length = room.get("round_length",90)
+                length = room.get("round_length",630)
                 start = room.get("round_start") or time.time()
                 elapsed = int(time.time() - start)
                 remaining = max(0, length - elapsed)
@@ -1310,7 +1369,7 @@ class ThreadedTCPServer(socketserver.ThreadingTCPServer):
 
 with ThreadedTCPServer(("0.0.0.0", 6123), FlashGameHandler) as server:
     server.rooms = {
-        "_": {"name": "_", "players": set(), "settings_string": "", "round_start": None, "round_length": 90, "crates": {}}
+        "_": {"name": "_", "players": set(), "settings_string": "", "round_start": None, "round_length": 630, "crates": {}}
     }
     print("[*] Listening on port 6123...")
     server.serve_forever()
