@@ -4,6 +4,8 @@ import hashlib
 import time
 import math
 import random
+import xml.etree.ElementTree as ET
+from xml.dom import minidom
 
 DB_FILE = "users.db"
 
@@ -14,6 +16,57 @@ USERS = {}  # account_id -> dict(socket, username, slot, room)
 ###############################################################################
 # Helpers
 ###############################################################################
+
+def update_most_wanted_xml():
+    """Generates the mostwanted.xml based on the current USER_DB in memory"""
+    try:
+        # 1. Convert USER_DB dictionary to a list and sort by bounty
+        # Format: user;hash;id;level;gender;head_model;head_color;body_model;body_color;bounty...
+        users_list = []
+        for uname, data in USER_DB.items():
+            users_list.append({
+                "name": uname,
+                "h_model": data.get("head_model", "0"),
+                "h_color": data.get("head_color", "0"),
+                "b_model": data.get("body_model", "0"),
+                "b_color": data.get("body_color", "0"),
+                "bounty": int(data.get("bounty", 0))
+            })
+
+        # 2. Sort by bounty points (highest first) and take top 100
+        users_list.sort(key=lambda x: x['bounty'], reverse=True)
+        top_users = users_list[:100]
+
+        # 3. Build the XML structure
+        root = ET.Element("rsp")
+        root.set("stat", "ok")
+        users_node = ET.SubElement(root, "users")
+
+        for u in top_users:
+            user_node = ET.SubElement(users_node, "user")
+            ET.SubElement(user_node, "name").text = u["name"]
+            ET.SubElement(user_node, "bountyPoints").text = str(u["bounty"])
+            
+            # Head Node (removing leading zeros)
+            head_node = ET.SubElement(user_node, "head")
+            ET.SubElement(head_node, "color").text = str(int(u["h_color"]))
+            ET.SubElement(head_node, "model").text = str(int(u["h_model"]))
+            
+            # Body Node (removing leading zeros)
+            body_node = ET.SubElement(user_node, "body")
+            ET.SubElement(body_node, "color").text = str(int(u["b_color"]))
+            ET.SubElement(body_node, "model").text = str(int(u["b_model"]))
+
+        # 4. Save to file
+        xml_str = ET.tostring(root, encoding='utf-8')
+        pretty_xml = minidom.parseString(xml_str).toprettyxml(indent="	")
+        
+        # Adjust path if needed, e.g., r"C:\Users\austi\OneDrive\Desktop\mostwanted.xml"
+        with open("mostwanted.xml", "w", encoding="utf-8") as f:
+            f.write(pretty_xml)
+            
+    except Exception as e:
+        print(f"[!] Error updating Most Wanted XML: {e}")
 
 def create_bounty_string(crate_type, index, pos):
     """
@@ -160,6 +213,7 @@ def save_all_users():
                         f"{data['deaths']};{data['wins']};"
                         f"{data['losses']};{data['wanted']}\n")
                 f.write(line)
+        update_most_wanted_xml()
     except Exception as e:
         print(f"Error saving DB: {e}")
 
@@ -493,6 +547,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             self.relay_raw_to_room(room_name, end_game_packet, include_self=True)
             # Push the timer into the future so it doesn't spam
             room["round_start"] = time.time() + 30
+            update_most_wanted_xml()
 
     def get_awards_and_save_db(self, room_name):
         room = self.server.rooms.get(room_name)
