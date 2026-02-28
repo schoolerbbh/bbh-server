@@ -1089,19 +1089,19 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
 
                     # 2. Assign BP based on room size and victim's rank
                     if num_players >= 16:
+                        if victim_rank == 1: death_bp = 6
+                        elif victim_rank == 2: death_bp = 5
+                        elif victim_rank == 3: death_bp = 4
+                        else: death_bp = 3
+                    elif 10 <= num_players <= 15:
                         if victim_rank == 1: death_bp = 4
                         elif victim_rank == 2: death_bp = 3
-                        elif victim_rank == 3: death_bp = 2
-                        else: death_bp = 1
-                    elif 9 <= num_players <= 15:
-                        if victim_rank == 1: death_bp = 3
-                        elif victim_rank == 2: death_bp = 2
-                        elif victim_rank == 3: death_bp = 1
-                        else: death_bp = 0
-                    elif 6 <= num_players <= 8:
+                        #elif victim_rank == 3: death_bp = 1
+                        else: death_bp = 2
+                    elif 6 <= num_players <= 9:
                         if victim_rank == 1: death_bp = 2
-                        elif victim_rank == 2: death_bp = 1
-                        else: death_bp = 0
+                        #elif victim_rank == 2: death_bp = 1
+                        else: death_bp = 1
                     
                     # Safely extract X and Y from the 10-character position string
                     try:
