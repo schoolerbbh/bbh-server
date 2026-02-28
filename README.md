@@ -10,4 +10,4 @@ NOTES: This server is currently local only (meaning it's essentially singleplaye
 5. In a terminal/PowerShell window, navigate to the directory containing the files and run "python server2.py"
 6. open the bbh.swf file using Adobe Flash Player Projector.
 7. Connect and enter a username and password on the login screen (NOT create account!). It will log you in and create the account you asked for. If you forget your password just delete the Users.db file and start again
-8. Enjoy! Currently you can get in lobby and ingame, but kills, deaths, money/cubes, and weapons are broken and/or don't work properly.
+8. Enjoy!
