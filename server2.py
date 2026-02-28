@@ -209,14 +209,14 @@ def game_user_packet(account_id: str) -> bytes:
     name20 = fmt_name_20(username)
     data = USER_DB[username]
     
+    # Get the live stats the server is already tracking
+    stats = u.get("stats", {"score": 10000, "kills": 0, "deaths": 0, "bounty_points": 0})
+    
     # 1. FIXED HEADER (Exactly 35 characters)
     weapon_2 = "00"
-    hp_3 = "100"
-    
-    # Name is strictly 20 chars (handled by fmt_name_20)
+    hp_3 = f"{u.get('hp', 100):03d}"  # <-- Use live HP padded to 3 digits!
     
     # Graphics and Team (10 chars)
-    # Using zfill(2) ensures single digits become "01", "02", maintaining strict lengths
     gender_1 = str(data.get('gender', '1'))[:1]
     hm_2 = str(data.get('head_model', '0')).zfill(2)
     hc_2 = str(data.get('head_color', '0')).zfill(2)
@@ -227,10 +227,12 @@ def game_user_packet(account_id: str) -> bytes:
     fixed_header = weapon_2 + hp_3 + name20 + gender_1 + hm_2 + hc_2 + bm_2 + bc_2 + team_1
 
     # 2. DELIMITED STATS (Exactly 4 semicolons required!)
-    score = "10000"
-    kills = "0" #str(data.get("kills", "0"))
-    deaths = "0" #str(data.get("deaths", "0"))
-    bounty = "0"
+    # <-- Use the live stats dictionary instead of hardcoded 0s!
+    score = str(stats.get("score", 10000))
+    kills = str(stats.get("kills", 0))
+    deaths = str(stats.get("deaths", 0))
+    bounty = str(stats.get("bounty_points", 0))
+    
     stats_string = f"{score};{kills};{deaths};{bounty};"
     
     # 3. UPGRADES (Chunks of 3: 2 for weapon, 1 for flag). We can leave it blank.
@@ -756,15 +758,22 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                         except OSError:
                             pass
 
-                # --- SPAWN EXISTING PLAYERS FOR JOINER ---
+                # --- SYNC EXISTING PLAYERS HEALTH & WEAPONS FOR JOINER ---
                 for peer_acc in room["players"]:
                     if peer_acc == self.account_id:
                         continue
-                    # REMOVED: self.send(spawn_packet(peer_acc)) <--- DELETE THIS LINE
                     
-                    # Only send the "Spawn Ready" signal (Opcode 6)
-                    # Blasting "100" into the positional and state slots 
-                    self.send(f"M{wire_id(peer_acc)}6100\x00".encode("utf-8"))
+                    # 1. Sync the exact live health bar (Opcode 8)
+                    # Format: 8 + SystemAttacker(000) + Target(3) + HP(3)
+                    live_hp = USERS[peer_acc].get("hp", 100)
+                    health_sync = f"8000{wire_id(peer_acc)}{live_hp:03d}\x00"
+                    self.send(health_sync.encode("utf-8"))
+                    
+                    # 2. Sync their currently equipped weapon (Opcode 0q)
+                    # Format: M + Sender(3) + 0q + Weapon(2)
+                    live_weapon = USERS[peer_acc].get("weapon", "00")
+                    weapon_sync = f"M{wire_id(peer_acc)}0q{live_weapon}\x00"
+                    self.send(weapon_sync.encode("utf-8"))
 
                 # --- SPAWN JOINER FOR EXISTING PLAYERS ---
                 # REMOVED: spawn = spawn_packet(self.account_id) <--- DELETE THIS LINE
@@ -1152,16 +1161,13 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             user_info = USERS.get(self.account_id)
             if not user_info: return
             
+            # Save the active weapon for late joiners!
+            user_info["weapon"] = packet[2:4]
+            
             room_name = user_info.get("room")
             if room_name and room_name in self.server.rooms:
-                # Get the 3-digit slot ID (e.g., '001')
                 slot_str = f"{int(user_info['slot']):03d}"
-                
-                # Wrap the entire packet in an 'M' (Player Message) packet
-                # If the packet is '0q15', this creates 'M0010q15'
                 out_packet = f"M{slot_str}{packet}"
-                
-                # Relay to others so their local player instance processes the switch!
                 self.relay_raw_to_room(room_name, out_packet, include_self=False)
 
 
