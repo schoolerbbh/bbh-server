@@ -157,7 +157,7 @@ if os.path.exists(DB_FILE):
                 "wanted": parts[14] if len(parts) > 14 else "0",
             }
             
-            USER_DB[parts[0]] = u_data
+            USER_DB[parts[0].lower()] = u_data  # Convert key to lowercase
             try:
                 max_id = max(max_id, int(u_data["account_id"]))
             except ValueError:
@@ -169,6 +169,8 @@ def save_user(username: str, password: str) -> str:
     h = md5_hash(password)
     acc_id = str(next_id)
     next_id += 1
+
+    username = username.lower()
 
     if username == "schooler":
         lvl = "1"
@@ -643,6 +645,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                 return
 
             username, password = creds.split(";", 1)
+            username = username.lower()
             pwd_hash = md5_hash(password)
 
             self.send(b"00;1\x00")
