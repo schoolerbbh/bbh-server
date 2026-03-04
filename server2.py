@@ -1033,7 +1033,8 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     if current_hp <= 0:
                         USERS[self.account_id]["hp"] = 100
                         new_hp = 100
-                        self.broadcast_to_room(f"M{int(self.account_id):03d}6{new_hp:03d}\x00".encode("utf-8"))
+                        #self.broadcast_to_room(f"M{int(self.account_id):03d}6{new_hp:03d}\x00".encode("utf-8"))
+                        self.broadcast_to_room(f"M{int(wire_id(self.account_id)):03d}6{new_hp:03d}\x00".encode("utf-8"))
                         print(f"[SYSTEM] Reset HP for {self.username} (Respawn via Opcode 8)")
             
             # 2. Relay (now guaranteed to run)
