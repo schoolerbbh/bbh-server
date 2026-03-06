@@ -172,10 +172,11 @@ def save_user(username: str, password: str) -> str:
 
     username = username.lower()
 
-    if username == "schooler":
-        lvl = "1"
-    else:
-        lvl = "0"
+    # if username == "schooler":
+    #     lvl = "1"
+    # else:
+    #     lvl = "0"
+    lvl = "0"
 
     # Create new user dict with defaults
     new_user = {
@@ -715,6 +716,18 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
 
             # now actually leave
             self.leave_current_room(self.account_id)
+
+            if self.account_id in USERS:
+                USERS[self.account_id]["stats"] = {
+                    "score": 10000, 
+                    "kills": 0, 
+                    "deaths": 0, 
+                    "bounty_points": 0
+                }
+                # Also reset temporary health/state if needed
+                USERS[self.account_id]["hp"] = 100
+                USERS[self.account_id]["last_state"] = None
+                print(f"[*] Session reset for {self.username}. Score set to 10000.")
 
             print(f"[=] User {wire_id(self.account_id)} joining room: {room_name}")
 
