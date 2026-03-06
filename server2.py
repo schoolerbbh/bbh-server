@@ -1192,6 +1192,17 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                                 crate_index = j
                                 break
                         
+                        # --- NEW: CRATE LIMIT REACHED (Overwrite Oldest) ---
+                        if crate_index == -1 and room["crates"]:
+                            # Find the crate index with the oldest timestamp
+                            oldest_idx_str = min(room["crates"], key=lambda k: room["crates"][k].get("timestamp", 0))
+                            crate_index = int(oldest_idx_str)
+                            
+                            # Pop it out of the dictionary so we can overwrite it cleanly
+                            room["crates"].pop(oldest_idx_str)
+                            # print(f"[*] Crate limit reached. Overwriting oldest crate: {oldest_idx_str}")
+                        # ---------------------------------------------------
+                        
                         if crate_index != -1:
                             idx_str = f"{crate_index:02d}"
                             
@@ -1208,12 +1219,13 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                             
                             crate_str = create_bounty_string(c_type, crate_index, spread_pos)
                             
-                            # Claim the index in the DB AND save the BP/Death ID for late joiners!
+                            # Claim the index in the DB AND save the BP/Death ID/Timestamp
                             room["crates"][idx_str] = {
                                 "type": c_type,
                                 "str": crate_str,
-                                "bp": death_bp,           # <-- Save the calculated BP here
-                                "death_id": death_id      # <-- Stamp it with the specific death
+                                "bp": death_bp,           
+                                "death_id": death_id,     
+                                "timestamp": time.time()  # <-- NEW: Track when it spawned
                             }
                             
                             bounty_str += crate_str
