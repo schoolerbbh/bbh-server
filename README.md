@@ -27,14 +27,23 @@ To get the server working, use the following steps:
 4. A terminal should display. You need to enter the following commands in succession:
   
    sudo apt update && sudo apt upgrade -y
+   
    sudo apt install python3 python3-pip nginx -y
+   
    sudo apt install python3 python3-pip nginx -y
+   
    ufw allow 22/tcp
+   
    ufw allow 80/tcp
+   
    ufw allow 6123/tcp
+   
    ufw enable
+   
    mkdir ~/game_server
+   
    cd ~/game_server
+
 
   Note that you may need to restart the server a few times. If you need to, just type "sudo reboot" and pick up where you left off.
 
@@ -42,10 +51,15 @@ To get the server working, use the following steps:
 6. Now entering the following commands:
 
    sudo chmod -R 755 /var/www/html/_assets/
+   
    sudo apt install screen -y
+   
    screen -S game
+   
    cd ~/game_server
+   
    sudo python3 bbh-server.py
+   
    
 8. Press Ctrl + A, then release both and press D.
 9. Your server should now work! If it doesn't, try asking me (or an AI). You should be able to get it working eventually.
