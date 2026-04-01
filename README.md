@@ -40,12 +40,14 @@ To get the server working, use the following steps:
 
 5. Now you should be in the game server directory. You now need to transfer your files from your local machine to the server. The easiest way to do this is to use a program called FileZilla. When you have downloaded the program, connect to the server using the IP address and SFTP. Login as "root" and with the password you set on DigitalOcean. Drag the Python file to the game_server directory and the crossdomain.xml and swf file to /var/www/html. Then make a new folder in html called "_assets" and add the constants.xml file there. If the constants can't be found (e.g. guns don't fire), try making the file name lowercase.
 6. Now entering the following commands:
+
    sudo chmod -R 755 /var/www/html/_assets/
    sudo apt install screen -y
    screen -S game
    cd ~/game_server
    sudo python3 bbh-server.py
-7. Press Ctrl + A, then release both and press D.
-8. Your server should now work! If it doesn't, try asking me (or an AI). You should be able to get it working eventually.
+   
+8. Press Ctrl + A, then release both and press D.
+9. Your server should now work! If it doesn't, try asking me (or an AI). You should be able to get it working eventually.
    
    
