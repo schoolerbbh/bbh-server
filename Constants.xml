@@ -55,7 +55,7 @@
 		</upgrade1>
 		<upgrade2>
 			<type>moveSpeed</type>
-			<value>1</value>
+			<value>1.1</value>
 			<cost>2500</cost>
 		</upgrade2>
 	</weapon>
