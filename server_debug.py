@@ -921,10 +921,10 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             # === NEW: DEPLOYABLE MANAGER (Opcode 4) ===
             # If this is a shooting packet, check if they fired a barricade/barrel
             if packet.startswith("4") and len(packet) >= 3:
-                weapon_id = packet[1:3]
+                weapon_id = USERS[self.account_id].get("weapon", "00")
                 
-                # '18' = Barricade Planter, '19' = Barrel Planter
-                if weapon_id in ["18", "19"]:
+                # '08' = Barricade Planter, '07' = Barrel Planter
+                if weapon_id in ["08", "07"]:
                     last_pos = USERS[self.account_id].get("last_pos")
                     
                     if last_pos and len(last_pos) >= 10:
@@ -939,7 +939,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                         room["deploy_idx"] = (room["deploy_idx"] + 1) % 100
                         
                         # "1" = Barricade, "0" = Barrel
-                        dep_code = "1" if weapon_id == "18" else "0"
+                        dep_code = "1" if weapon_id == "08" else "0"
                         
                         # Construct 'n' packet: n + slot(3) + depCode(1) + index(2) + cellX(3) + cellY(3)
                         # Example result: n001100062010
