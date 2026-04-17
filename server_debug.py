@@ -946,6 +946,12 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                         n_packet = f"n{slot.zfill(3)}{dep_code}{idx_str}{cell_x_str}{cell_y_str}"
                         
                         print(f"\n[!!!] BROADCASTING DEPLOYABLE: {n_packet}\n")
+
+                        # === NEW: SAVE TO ROOM MEMORY FOR LATE JOINERS ===
+                        if "deployables" not in room:
+                            room["deployables"] = {}
+                        
+                        room["deployables"][idx_str] = n_packet
                         
                         # Send the confirmation 'n' packet to EVERYONE
                         n_bytes = (n_packet + "\x00").encode("utf-8")
@@ -1335,6 +1341,14 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     USERS[self.account_id]["hp"] = 100
                     print(f"[SYSTEM] Reset HP for {self.username} (Respawn)")
 
+            # === NEW: SEND ALL BARRICADES TO THE PLAYER LOADING IN ===
+                room_name = USERS[self.account_id].get("room")
+                if room_name and room_name in self.server.rooms:
+                    room = self.server.rooms[room_name]
+                    if "deployables" in room:
+                        for dep_packet in room["deployables"].values():
+                            self.send((dep_packet + "\x00").encode("utf-8"))
+
             if room_name:
                 self.relay_raw_to_room(room_name, packet, include_self=False)
 
@@ -1445,6 +1459,21 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
 
         else:
             print(f"[?] Unhandled: {repr(packet)}")
+
+            room_name = USERS[self.account_id].get("room")
+            if room_name and room_name in self.server.rooms:
+                room = self.server.rooms[room_name]
+                
+                # Relay the raw, unknown packet to everyone else in the room
+                payload_bytes = (packet + "\x00").encode("utf-8")
+                for peer_acc in list(room["players"]):
+                    if peer_acc != self.account_id and peer_acc in USERS:
+                        try:
+                            USERS[peer_acc]["socket"].sendall(payload_bytes)
+                        except OSError:
+                            pass
+
+
 
     def handle(self):
         self.username = None
