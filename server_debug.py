@@ -977,32 +977,53 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
         # 4. DEPLOYABLE DAMAGE/DESTRUCTION (Opcode o)
         # ==========================================
         elif packet.startswith("o"):
-                room_name = USERS[self.account_id].get("room")
-                if room_name and room_name in self.server.rooms:
-                    room = self.server.rooms[room_name]
+            room_name = USERS[self.account_id].get("room")
+            if room_name and room_name in self.server.rooms:
+                room = self.server.rooms[room_name]
+                
+                target_idx = packet[1:3] 
+                
+                # 1. Initialize health tracker (default 40)
+                if "dep_health" not in room:
+                    room["dep_health"] = {}
+                current_hp = room["dep_health"].get(target_idx, 40)
+                
+                # 2. EXTRACT EXACT WEAPON DAMAGE FROM THE PACKET!
+                # E.g., 'o0000225' -> packet[6:] grabs the '25'
+                try:
+                    damage = int(packet[6:])
+                except ValueError:
+                    damage = 0
                     
-                    target_idx = packet[1:3] 
-                    
-                    # 1. Scrub from room memory for late joiners
+                # 3. Apply the true damage
+                current_hp -= damage
+                room["dep_health"][target_idx] = current_hp
+                
+                if current_hp <= 0:
+                    # BARRICADE DESTROYED! Scrub from memory.
                     if "deployables" in room:
                         keys_to_delete = [k for k in room["deployables"].keys() if k.endswith(target_idx)]
                         for k in keys_to_delete:
                             del room["deployables"][k]
-                            print(f"[-] Barricade {target_idx} destroyed. Removed from late-joiner state.")
+                            print(f"[-] Barricade {target_idx} destroyed.")
 
-                    # 2. REWRITE PACKET to trigger the AS3 "no killer" safety fallback
-                    safe_kill_packet = f"o{target_idx}00"
-                    payload_bytes = (safe_kill_packet + "\x00").encode("utf-8")
-                    
-                    # 3. Relay to EVERYONE (including the shooter)
+                    # Send the safe '00' health packet to gracefully destroy it
+                    payload_bytes = (f"o{target_idx}00\x00").encode("utf-8")
                     for peer_acc in list(room["players"]):
                         if peer_acc in USERS:
-                            try:
-                                USERS[peer_acc]["socket"].sendall(payload_bytes)
-                            except OSError:
-                                pass
-                return
-
+                            try: USERS[peer_acc]["socket"].sendall(payload_bytes)
+                            except OSError: pass
+                else:
+                    # BARRICADE SURVIVED! Sync the precise new health.
+                    # This avoids the >= 5 length AS3 death crash!
+                    hp_str = str(current_hp).zfill(2)
+                    payload_bytes = (f"o{target_idx}{hp_str}\x00").encode("utf-8")
+                    for peer_acc in list(room["players"]):
+                        if peer_acc in USERS:
+                            try: USERS[peer_acc]["socket"].sendall(payload_bytes)
+                            except OSError: pass
+            return
+        
         # === 2. SHOOTING (Types 2, 3) ===
         elif packet.startswith("2") or packet.startswith("3"):
             # Retrieve room safely
