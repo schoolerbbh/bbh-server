@@ -963,6 +963,76 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                                     pass
             # ==========================================
 
+            if packet.startswith("4"):
+                    current_weapon = USERS[self.account_id].get("weapon", "00")
+                    
+                    # 00 = Pistol, 01 = Uzi (Check your logs if Uzi is different!)
+                    if current_weapon in ["00", "02"]:
+                        last_pos = USERS[self.account_id].get("last_pos")
+                        
+                        if last_pos and len(last_pos) >= 10 and len(packet) >= 4:
+                            import math
+                            # Grab player grid X/Y and firing angle
+                            grid_x = int(last_pos[0:3])
+                            grid_y = int(last_pos[5:8])
+                            angle = int(packet[1:4])
+                            
+                            # Boxhead Flash angles: 0=Right, 90=Down, 180=Left, 270=Up
+                            rad = math.radians(angle)
+                            dx = math.cos(rad)
+                            dy = math.sin(rad)
+                            
+                            hit_idx = None
+                            
+                            # Shoot an invisible ray up to 15 tiles outward
+                            for step_half in range(1, 30):
+                                step = step_half / 2.0
+                                check_x = grid_x + int(dx * step)
+                                check_y = grid_y + int(dy * step)
+                                
+                                # Check against all deployed barricades
+                                if "deployables" in room:
+                                    for uid, n_pack in room["deployables"].items():
+                                        # n_pack = 'n001103030066' (len 13)
+                                        if len(n_pack) >= 13:
+                                            dep_idx = n_pack[5:7]
+                                            dep_x = int(n_pack[7:10])
+                                            dep_y = int(n_pack[10:13])
+                                            
+                                            # If ray touches the barricade's grid cell
+                                            if check_x == dep_x and check_y == dep_y:
+                                                hit_idx = dep_idx
+                                                break
+                                if hit_idx:
+                                    break
+                                    
+                            # If we hit something, apply 10 damage!
+                            if hit_idx:
+                                if "dep_health" not in room:
+                                    room["dep_health"] = {}
+                                current_hp = room["dep_health"].get(hit_idx, 40)
+                                current_hp -= 10
+                                room["dep_health"][hit_idx] = current_hp
+                                
+                                if current_hp <= 0:
+                                    # Barricade destroyed by server physics!
+                                    if "deployables" in room:
+                                        keys_to_delete = [k for k in room["deployables"].keys() if k.endswith(hit_idx)]
+                                        for k in keys_to_delete:
+                                            del room["deployables"][k]
+                                            
+                                    payload_bytes = (f"o{hit_idx}00\x00").encode("utf-8")
+                                else:
+                                    # Send safe health sync
+                                    hp_str = str(current_hp).zfill(2)
+                                    payload_bytes = (f"o{hit_idx}{hp_str}\x00").encode("utf-8")
+                                    
+                                # Broadcast the hit to EVERYONE
+                                for peer_acc in list(room["players"]):
+                                    if peer_acc in USERS:
+                                        try: USERS[peer_acc]["socket"].sendall(payload_bytes)
+                                        except OSError: pass
+
             # 4. BROADCAST SHOOTING/MOVEMENT TO PEERS
             # We skip the sender here so they don't get duplicate shooting sounds
             for peer_acc in list(room["players"]):
