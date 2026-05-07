@@ -973,6 +973,36 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     except OSError: 
                         pass
 
+        # ==========================================
+        # 4. DEPLOYABLE DAMAGE/DESTRUCTION (Opcode o)
+        # ==========================================
+        elif packet.startswith("o"):
+                room_name = USERS[self.account_id].get("room")
+                if room_name and room_name in self.server.rooms:
+                    room = self.server.rooms[room_name]
+                    
+                    target_idx = packet[1:3] 
+                    
+                    # 1. Scrub from room memory for late joiners
+                    if "deployables" in room:
+                        keys_to_delete = [k for k in room["deployables"].keys() if k.endswith(target_idx)]
+                        for k in keys_to_delete:
+                            del room["deployables"][k]
+                            print(f"[-] Barricade {target_idx} destroyed. Removed from late-joiner state.")
+
+                    # 2. REWRITE PACKET to trigger the AS3 "no killer" safety fallback
+                    safe_kill_packet = f"o{target_idx}00"
+                    payload_bytes = (safe_kill_packet + "\x00").encode("utf-8")
+                    
+                    # 3. Relay to EVERYONE (including the shooter)
+                    for peer_acc in list(room["players"]):
+                        if peer_acc in USERS:
+                            try:
+                                USERS[peer_acc]["socket"].sendall(payload_bytes)
+                            except OSError:
+                                pass
+                return
+
         # === 2. SHOOTING (Types 2, 3) ===
         elif packet.startswith("2") or packet.startswith("3"):
             # Retrieve room safely
