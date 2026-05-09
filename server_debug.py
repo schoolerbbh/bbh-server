@@ -1007,11 +1007,20 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                                     break
                                     
                             # If we hit something, apply 10 damage!
+                            # If we hit something, apply accurate weapon damage!
                             if hit_idx:
                                 if "dep_health" not in room:
                                     room["dep_health"] = {}
                                 current_hp = room["dep_health"].get(hit_idx, 40)
-                                current_hp -= 10
+                                
+                                # Map the weapon ID to its actual damage
+                                # 00 = Pistol (7 dmg), 01 = Uzi (Change this to Uzi's true damage!)
+                                weapon_damage = {"00": 7, "02": 5, "03": 6, "04": 8, "05": 3, "06": 55, "07": 35, "11": 45, "13": 9, "14": 10, "15": 25, "16": 50, "17": 40, "18": 75, "19": 30, "20": 55, "21": 60} 
+                                
+                                # Deduct the exact damage for the currently equipped weapon
+                                applied_damage = weapon_damage.get(current_weapon, 7)
+                                current_hp -= applied_damage
+                                
                                 room["dep_health"][hit_idx] = current_hp
                                 
                                 if current_hp <= 0:
