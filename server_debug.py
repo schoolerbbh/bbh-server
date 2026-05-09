@@ -971,7 +971,6 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                         last_pos = USERS[self.account_id].get("last_pos")
                         
                         if last_pos and len(last_pos) >= 10 and len(packet) >= 4:
-                            import math
                             # Grab player grid X/Y and firing angle
                             grid_x = int(last_pos[0:3])
                             grid_y = int(last_pos[5:8])
