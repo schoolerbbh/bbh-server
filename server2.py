@@ -889,9 +889,9 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
 
             raw = packet[1:] # Strip Type (e.g. "1")
 
+            # Store last known position for deploying items
             if packet.startswith("1") and len(packet) >= 11:
-            # Opcode 1 contains the 10-digit position right after the "1"
-            # Example: '10541600657...' -> '0541600657'
+                # Opcode 1 contains the 10-digit position right after the "1"
                 USERS[self.account_id]["last_pos"] = packet[1:11]
             
             if len(raw) >= 10:
@@ -909,10 +909,7 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     y_final = str(val_y).zfill(5)
 
                     # 3. CONSTRUCT PAYLOAD
-                    # Structure: M + Slot(3) + Type(1) + X(5) + Y(5) + Rest
-                    # We ensure slot is 3 chars (e.g. "1" -> "001")
                     safe_slot = slot.zfill(3)
-                    
                     payload = "M" + safe_slot + packet[0] + x_final + y_final + rest
                         
                 except ValueError:
@@ -921,13 +918,190 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
             else:
                 payload = "M" + slot.zfill(3) + packet
 
-            # 4. BROADCAST
+            # === NEW: DEPLOYABLE MANAGER (Opcode 4) ===
+            # If this is a shooting packet, check if they fired a barricade/barrel
+            if packet.startswith("4") and len(packet) >= 3:
+                weapon_id = USERS[self.account_id].get("weapon", "00")
+                
+                # '08' = Barricade Planter, '07' = Barrel Planter
+                if weapon_id in ["08", "07"]:
+                    last_pos = USERS[self.account_id].get("last_pos")
+                    
+                    if last_pos and len(last_pos) >= 10:
+                        # NEW DISCOVERY: The 5-digit number is a fixed-point CELL coordinate!
+                        # Example: '06242' means 62.42 cells. The integer cell is just the first 3 digits!
+                        cell_x_str = last_pos[0:3] 
+                        cell_y_str = last_pos[5:8]
+                        
+                        # Increment the room's deployable index (00 to 99)
+                        room.setdefault("deploy_idx", 0)
+                        idx_str = f"{room['deploy_idx']:02d}"
+                        room["deploy_idx"] = (room["deploy_idx"] + 1) % 100
+                        
+                        # "1" = Barricade, "0" = Barrel
+                        dep_code = "1" if weapon_id == "08" else "0"
+                        
+                        # Construct 'n' packet: n + slot(3) + depCode(1) + index(2) + cellX(3) + cellY(3)
+                        # Example result: n001100062010
+                        n_packet = f"n{slot.zfill(3)}{dep_code}{idx_str}{cell_x_str}{cell_y_str}"
+                        
+                        print(f"\n[!!!] BROADCASTING DEPLOYABLE: {n_packet}\n")
+
+                        # === NEW: SAVE TO ROOM MEMORY FOR LATE JOINERS ===
+                        if "deployables" not in room:
+                            room["deployables"] = {}
+                        
+                        room["deployables"][idx_str] = n_packet
+                        
+                        # Send the confirmation 'n' packet to EVERYONE
+                        n_bytes = (n_packet + "\x00").encode("utf-8")
+                        for peer_acc in list(room["players"]):
+                            if peer_acc in USERS:
+                                try:
+                                    USERS[peer_acc]["socket"].sendall(n_bytes)
+                                except OSError:
+                                    pass
+            # ==========================================
+
+            if packet.startswith("4"):
+                    current_weapon = USERS[self.account_id].get("weapon", "00")
+                    
+                    # 00 = Pistol, 01 = Uzi (Check your logs if Uzi is different!)
+                    if current_weapon in ["00", "02"]:
+                        last_pos = USERS[self.account_id].get("last_pos")
+                        
+                        if last_pos and len(last_pos) >= 10 and len(packet) >= 4:
+                            # Grab player grid X/Y and firing angle
+                            grid_x = int(last_pos[0:3])
+                            grid_y = int(last_pos[5:8])
+                            angle = int(packet[1:4])
+                            
+                            # Boxhead Flash angles: 0=Right, 90=Down, 180=Left, 270=Up
+                            rad = math.radians(angle)
+                            dx = math.cos(rad)
+                            dy = math.sin(rad)
+                            
+                            hit_idx = None
+                            
+                            # Shoot an invisible ray up to 15 tiles outward
+                            for step_half in range(1, 30):
+                                step = step_half / 2.0
+                                check_x = grid_x + int(dx * step)
+                                check_y = grid_y + int(dy * step)
+                                
+                                # Check against all deployed barricades
+                                if "deployables" in room:
+                                    for uid, n_pack in room["deployables"].items():
+                                        # n_pack = 'n001103030066' (len 13)
+                                        if len(n_pack) >= 13:
+                                            dep_idx = n_pack[5:7]
+                                            dep_x = int(n_pack[7:10])
+                                            dep_y = int(n_pack[10:13])
+                                            
+                                            # If ray touches the barricade's grid cell
+                                            if check_x == dep_x and check_y == dep_y:
+                                                hit_idx = dep_idx
+                                                break
+                                if hit_idx:
+                                    break
+                                    
+                            # If we hit something, apply 10 damage!
+                            # If we hit something, apply accurate weapon damage!
+                            if hit_idx:
+                                if "dep_health" not in room:
+                                    room["dep_health"] = {}
+                                current_hp = room["dep_health"].get(hit_idx, 40)
+                                
+                                # Map the weapon ID to its actual damage
+                                # 00 = Pistol (7 dmg), 01 = Uzi (Change this to Uzi's true damage!)
+                                weapon_damage = {"00": 7, "02": 5, "03": 6, "04": 8, "05": 3, "06": 55, "07": 35, "11": 45, "13": 9, "14": 10, "15": 25, "16": 50, "17": 40, "18": 75, "19": 30, "20": 55, "21": 60} 
+                                
+                                # Deduct the exact damage for the currently equipped weapon
+                                applied_damage = weapon_damage.get(current_weapon, 7)
+                                current_hp -= applied_damage
+                                
+                                room["dep_health"][hit_idx] = current_hp
+                                
+                                if current_hp <= 0:
+                                    # Barricade destroyed by server physics!
+                                    if "deployables" in room:
+                                        keys_to_delete = [k for k in room["deployables"].keys() if k.endswith(hit_idx)]
+                                        for k in keys_to_delete:
+                                            del room["deployables"][k]
+                                            
+                                    payload_bytes = (f"o{hit_idx}00\x00").encode("utf-8")
+                                else:
+                                    # Send safe health sync
+                                    hp_str = str(current_hp).zfill(2)
+                                    payload_bytes = (f"o{hit_idx}{hp_str}\x00").encode("utf-8")
+                                    
+                                # Broadcast the hit to EVERYONE
+                                for peer_acc in list(room["players"]):
+                                    if peer_acc in USERS:
+                                        try: USERS[peer_acc]["socket"].sendall(payload_bytes)
+                                        except OSError: pass
+
+            # 4. BROADCAST SHOOTING/MOVEMENT TO PEERS
+            # We skip the sender here so they don't get duplicate shooting sounds
             for peer_acc in list(room["players"]):
                 if peer_acc == self.account_id: continue
                 if peer_acc in USERS:
-                    try: USERS[peer_acc]["socket"].sendall(payload.encode("utf-8") + b"\x00")
-                    except: pass
+                    try: 
+                        USERS[peer_acc]["socket"].sendall(payload.encode("utf-8") + b"\x00")
+                    except OSError: 
+                        pass
 
+        # ==========================================
+        # 4. DEPLOYABLE DAMAGE/DESTRUCTION (Opcode o)
+        # ==========================================
+        elif packet.startswith("o"):
+            room_name = USERS[self.account_id].get("room")
+            if room_name and room_name in self.server.rooms:
+                room = self.server.rooms[room_name]
+                
+                target_idx = packet[1:3] 
+                
+                # 1. Initialize health tracker (default 40)
+                if "dep_health" not in room:
+                    room["dep_health"] = {}
+                current_hp = room["dep_health"].get(target_idx, 40)
+                
+                # 2. EXTRACT EXACT WEAPON DAMAGE FROM THE PACKET!
+                # E.g., 'o0000225' -> packet[6:] grabs the '25'
+                try:
+                    damage = int(packet[6:])
+                except ValueError:
+                    damage = 0
+                    
+                # 3. Apply the true damage
+                current_hp -= damage
+                room["dep_health"][target_idx] = current_hp
+                
+                if current_hp <= 0:
+                    # BARRICADE DESTROYED! Scrub from memory.
+                    if "deployables" in room:
+                        keys_to_delete = [k for k in room["deployables"].keys() if k.endswith(target_idx)]
+                        for k in keys_to_delete:
+                            del room["deployables"][k]
+                            print(f"[-] Barricade {target_idx} destroyed.")
+
+                    # Send the safe '00' health packet to gracefully destroy it
+                    payload_bytes = (f"o{target_idx}00\x00").encode("utf-8")
+                    for peer_acc in list(room["players"]):
+                        if peer_acc in USERS:
+                            try: USERS[peer_acc]["socket"].sendall(payload_bytes)
+                            except OSError: pass
+                else:
+                    # BARRICADE SURVIVED! Sync the precise new health.
+                    # This avoids the >= 5 length AS3 death crash!
+                    hp_str = str(current_hp).zfill(2)
+                    payload_bytes = (f"o{target_idx}{hp_str}\x00").encode("utf-8")
+                    for peer_acc in list(room["players"]):
+                        if peer_acc in USERS:
+                            try: USERS[peer_acc]["socket"].sendall(payload_bytes)
+                            except OSError: pass
+            return
+        
         # === 2. SHOOTING (Types 2, 3) ===
         elif packet.startswith("2") or packet.startswith("3"):
             # Retrieve room safely
@@ -1296,6 +1470,14 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
                     USERS[self.account_id]["hp"] = 100
                     print(f"[SYSTEM] Reset HP for {self.username} (Respawn)")
 
+            # === NEW: SEND ALL BARRICADES TO THE PLAYER LOADING IN ===
+                room_name = USERS[self.account_id].get("room")
+                if room_name and room_name in self.server.rooms:
+                    room = self.server.rooms[room_name]
+                    if "deployables" in room:
+                        for dep_packet in room["deployables"].values():
+                            self.send((dep_packet + "\x00").encode("utf-8"))
+
             if room_name:
                 self.relay_raw_to_room(room_name, packet, include_self=False)
 
@@ -1406,6 +1588,21 @@ class FlashGameHandler(socketserver.BaseRequestHandler):
 
         else:
             print(f"[?] Unhandled: {repr(packet)}")
+
+            room_name = USERS[self.account_id].get("room")
+            if room_name and room_name in self.server.rooms:
+                room = self.server.rooms[room_name]
+                
+                # Relay the raw, unknown packet to everyone else in the room
+                payload_bytes = (packet + "\x00").encode("utf-8")
+                for peer_acc in list(room["players"]):
+                    if peer_acc != self.account_id and peer_acc in USERS:
+                        try:
+                            USERS[peer_acc]["socket"].sendall(payload_bytes)
+                        except OSError:
+                            pass
+
+
 
     def handle(self):
         self.username = None
